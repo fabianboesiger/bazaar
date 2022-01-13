@@ -20,6 +20,7 @@ serde_json = { version = "1.0.74", optional = true }
 tokio-util = "0.6.9"
 uuid = { version = "0.8.2", features = ["serde", "v4"] }
 cht = "0.5.0"
+deadpool = "0.9.2"
 
 [dev-dependencies]
 tokio = { version = "1.15.0", features = ["rt"] }

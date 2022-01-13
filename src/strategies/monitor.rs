@@ -51,13 +51,13 @@ impl<A: Api, S: Strategy<A>> Monitor<A, S> {
 
 // This strategy is applicable for all APIs that allow futures trading.
 impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
-    const NAME: &'static str = "MA Crossover Strategy";
+    const NAME: &'static str = S::NAME;
 
     fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Options, AnyError> {
         let result = self.strategy.init(exchange);
 
         if let Ok(_options) = &result {
-            self.tx.send(Log::Init(Self::NAME.to_owned())).ok();
+            self.tx.send(Log::Init(Self::NAME.to_owned(), A::NAME.to_owned(), A::LIVE_TRADING_ENABLED)).ok();
         }
 
         result
@@ -92,7 +92,7 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Log {
     // Starts the logging process.
-    Init(String),
+    Init(String, String, bool),
     // The strategy was aborted, including reason.
     Error(String),
     // The strategy enters a position.

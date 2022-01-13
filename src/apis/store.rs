@@ -1,4 +1,4 @@
-use std::{pin::Pin};
+use std::{pin::Pin, ops::DerefMut};
 
 use crate::{
     apis::{Api, ApiError, Order, OrderInfo},
@@ -9,17 +9,43 @@ use async_trait::async_trait;
 use chrono::{Duration, TimeZone, Utc};
 use futures_util::{lock::Mutex, Stream, StreamExt};
 use rust_decimal::prelude::*;
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, SqlitePool, SqliteConnection, Error as SqlxError, Connection};
 use cht::map::HashMap;
+use deadpool::managed::{Manager, RecycleResult, Pool, Object};
+
+struct DbPool {
+    options: SqliteConnectOptions,
+}
+
+impl DbPool {
+    fn new(options: SqliteConnectOptions) -> DbPool {
+        DbPool {
+            options,
+        }
+    }
+}
+
+#[async_trait]
+impl Manager for DbPool {
+    type Type = SqliteConnection;
+    type Error = SqlxError;
+
+    async fn create(&self) -> Result<SqliteConnection, SqlxError> {
+        SqliteConnection::connect_with(&self.options).await
+        
+    }
+    async fn recycle(&self, obj: &mut SqliteConnection) -> RecycleResult<SqlxError> {
+        Ok(obj.ping().await?)
+    }
+}
 
 pub struct Store<A>
 where
     A: Api,
 {
     api: A,
-    pool: SqlitePool,
+    pool: Pool<DbPool>,
     cache: HashMap<CandleKey, Option<Candle>>,
-    //pools: HashMap<(Symbol, Duration), SqlitePool>
 }
 
 impl<A> Store<A>
@@ -29,13 +55,12 @@ where
     pub async fn new(api: A) -> Self {
         std::fs::create_dir_all("./.store").unwrap();
 
-        let pool = SqlitePool::connect_with(
-            SqliteConnectOptions::new()
-                .filename(format!("./.store/{}.db", A::NAME))
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(format!("./.store/{}.db", A::NAME))
+            .create_if_missing(true);
+
+        let pool: Pool<DbPool, Object<DbPool>> = Pool::builder(DbPool::new(options)).build().unwrap();
+        
 
         sqlx::query(
             "
@@ -48,7 +73,7 @@ where
                 )
             ",
         )
-        .execute(&pool)
+        .execute(pool.get().await.unwrap().deref_mut())
         .await
         .unwrap();
 
@@ -83,9 +108,9 @@ impl<A: Api> Api for Store<A> {
             )
             .bind(key.market.to_string())
             .bind(key.time.timestamp())
-            .bind((key.time + key.interval * 500).timestamp())
+            .bind((key.time + key.interval * 5000).timestamp())
             .bind(key.interval.num_seconds())
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool.get().await.unwrap().deref_mut())
             .await
             .unwrap();
 
@@ -95,7 +120,7 @@ impl<A: Api> Api for Store<A> {
                 let mut query_string = String::from(
                     "INSERT INTO data (market, timestamp, close, volume, interval) VALUES ",
                 );
-                for i in 0..500 {
+                for i in 0..5000 {
                     query_string += &format!(
                         "(${},${},${},${},${}),",
                         i * 5 + 1,
@@ -108,7 +133,8 @@ impl<A: Api> Api for Store<A> {
                 query_string.pop();
                 let mut query = sqlx::query(&query_string);
 
-                for i in 0..500 {
+                for i in 0..5000 {
+                    log::trace!("Fetching candle {}", i);
                     let fetch_time = key.time + key.interval * i;
                     let fetch_key = CandleKey {
                         time: fetch_time,
@@ -124,8 +150,12 @@ impl<A: Api> Api for Store<A> {
                         .bind(candle.as_ref().map(|candle| dec_to_blob(candle.volume)))
                         .bind(fetch_key.interval.num_seconds());
                 }
-
-                query.execute(&self.pool).await.unwrap();
+                log::trace!("Getting connection");
+                let mut obj = self.pool.get().await.unwrap();
+                let connection = obj.deref_mut();
+                log::trace!("Executing insert");
+                query.execute(connection).await.unwrap();
+                log::trace!("Done executing insert");
 
                 Ok(self.cache.remove(&key).unwrap())
             } else {
