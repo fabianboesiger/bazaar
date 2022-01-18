@@ -89,9 +89,9 @@ impl<A: Api> Api for Simulate<A> {
                 */
 
                 *info = MarketInfo {
-                    min_size: Decimal::zero(),
-                    size_increment: Decimal::zero(),
-                    price_increment: Decimal::zero(),
+                    min_size: Decimal::ZERO,
+                    size_increment: Decimal::ZERO,
+                    price_increment: Decimal::ZERO,
                     daily_volume: Decimal::new(i64::MAX, 0),
                 };
             });

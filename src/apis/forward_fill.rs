@@ -14,6 +14,7 @@ pub struct ForwardFill<A>
 where
     A: Api,
 {
+    #[allow(clippy::type_complexity)]
     cache: Mutex<HashMap<(Symbol, Duration), (DateTime<Utc>, Candle)>>,
     api: A,
     max_duration: Duration,
@@ -51,7 +52,7 @@ impl<A: Api> Api for ForwardFill<A> {
             } else if let Some((time, candle)) = cache.get(&(key.market, key.interval)) {
                 if key.time.signed_duration_since(*time) <= self.max_duration {
                     log::warn!("Forward filling candle for time {}.", key.time);
-                    Ok(vec![(key, Some(candle.clone()))])
+                    Ok(vec![(key, Some(*candle))])
                 } else {
                     panic!("Gap too large to forward fill.");
                 }
@@ -61,18 +62,16 @@ impl<A: Api> Api for ForwardFill<A> {
         } else {
             for (key, maybe_candle) in candles.iter_mut() {
                 if let Some(candle) = maybe_candle {
-                    cache.insert((key.market, key.interval), (key.time, candle.clone()));
-                } else {
-                    if key.time >= Utc::now() - key.interval * 2 {
-                        // Do not forward fill candles in the future.
-                        break;
-                    } else if let Some((time, candle)) = cache.get(&(key.market, key.interval)) {
-                        if key.time.signed_duration_since(*time) <= self.max_duration {
-                            log::warn!("Forward filling candle for time {}.", key.time);
-                            *maybe_candle = Some(candle.clone());
-                        } else {
-                            panic!("Gap too large forward fill.");
-                        }
+                    cache.insert((key.market, key.interval), (key.time, *candle));
+                } else if key.time >= Utc::now() - key.interval * 2 {
+                    // Do not forward fill candles in the future.
+                    break;
+                } else if let Some((time, candle)) = cache.get(&(key.market, key.interval)) {
+                    if key.time.signed_duration_since(*time) <= self.max_duration {
+                        log::warn!("Forward filling candle for time {}.", key.time);
+                        *maybe_candle = Some(*candle);
+                    } else {
+                        panic!("Gap too large forward fill.");
                     }
                 }
             }

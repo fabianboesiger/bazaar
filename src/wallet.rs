@@ -1,4 +1,4 @@
-use rust_decimal::{prelude::Zero, Decimal};
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -32,7 +32,7 @@ impl Wallet {
     }
 
     pub fn deposit(&mut self, qty: Decimal, asset: Asset) {
-        assert!(qty >= Decimal::zero());
+        assert!(qty >= Decimal::ZERO);
         log::debug!("Depositing {} {}", qty, asset);
         let mut total_qty = self.total.entry(asset).or_default();
         let mut free_qty = self.free.entry(asset).or_default();
@@ -41,7 +41,7 @@ impl Wallet {
     }
 
     pub fn reserve(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
-        assert!(qty >= Decimal::zero());
+        assert!(qty >= Decimal::ZERO);
         let mut free_qty = self.free.entry(asset).or_default();
         log::debug!("Reserving {} {}", qty, asset);
         if qty > *free_qty {
@@ -52,7 +52,7 @@ impl Wallet {
     }
 
     pub fn free(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
-        assert!(qty >= Decimal::zero());
+        assert!(qty >= Decimal::ZERO);
         let mut free_qty = self.free.entry(asset).or_default();
         let total_qty = self.total.entry(asset).or_default();
         let reserved_qty = *total_qty - *free_qty;
@@ -71,13 +71,13 @@ impl Wallet {
     }
 
     pub fn available(&self, asset: Asset) -> Decimal {
-        self.free.get(&asset).cloned().unwrap_or(Decimal::zero())
+        self.free.get(&asset).cloned().unwrap_or(Decimal::ZERO)
     }
 
     /// Withdraw some quantity of an asset.
     /// Assumes that the quantity to be withdrawn was reserved beforehand.
     pub fn withdraw(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
-        assert!(qty >= Decimal::zero());
+        assert!(qty >= Decimal::ZERO);
         log::debug!("Withdrawing {} {}", qty, asset);
         let mut total_qty = self.total.entry(asset).or_default();
         let free_qty = self.free.entry(asset).or_default();

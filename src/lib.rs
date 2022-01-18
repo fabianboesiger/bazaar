@@ -1,5 +1,6 @@
 #![deny(unused_must_use)]
 #![deny(unsafe_code)]
+#![allow(clippy::new_without_default)]
 
 pub mod apis;
 mod asset;

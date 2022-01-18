@@ -311,7 +311,7 @@ impl<A: Api> Exchange<A> {
                 self.exit_many().await?;
                 log::trace!("Entering positions.");
                 self.enter_many().await?;
-                self.step(&options);
+                self.step(options);
             } else {
                 /*
                 for (_, candles) in &self.candles {
@@ -364,14 +364,14 @@ impl<A: Api> Exchange<A> {
                     log::error!("An error occured: {}", err);
                     match options.on_error {
                         OnError::Return => {
-                            Err(err)?;
+                            return Err(err);
                         }
                         OnError::ExitAllPositionsAndReturn => {
                             for position in self.open_positions.iter() {
                                 self.exit(position);
                             }
                             self.exit_many().await?;
-                            Err(err)?;
+                            return Err(err);
                         }
                         OnError::ExitAllPositionsAndResume => {
                             for position in self.open_positions.iter() {

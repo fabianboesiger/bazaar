@@ -33,7 +33,7 @@ impl Ftx {
         };
 
         Ftx {
-            rest: Rest::new(options.clone()),
+            rest: Rest::new(options),
             //options,
         }
     }
@@ -88,7 +88,7 @@ impl Api for Ftx {
             .collect();
 
         let mut out = Vec::new();
-        let mut next_key = key.clone();
+        let mut next_key = key;
         /*
         for (key, candle) in candles {
             if next_key != key {
@@ -165,7 +165,7 @@ impl Api for Ftx {
             .await
             .map(|info| OrderInfo {
                 price: info.avg_fill_price.unwrap(),
-                size: info.filled_size.unwrap_or(Decimal::zero()),
+                size: info.filled_size.unwrap_or(Decimal::ZERO),
                 time: info.created_at,
             })
             .map_err(|err| match err {

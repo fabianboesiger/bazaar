@@ -157,7 +157,7 @@ impl Orderbook {
         let mut fills: Vec<(Decimal, Decimal)> = Vec::new(); // (price, quantity)
         let mut remaining = size;
 
-        while remaining > Decimal::zero() {
+        while remaining > Decimal::ZERO {
             let (price, quantity) = match side {
                 Side::Buy => asks_iter.next()?,
                 Side::Sell => bids_iter.next()?,
@@ -168,12 +168,12 @@ impl Orderbook {
                 fills.push((*price, *quantity));
             } else {
                 fills.push((*price, remaining));
-                remaining = Decimal::zero();
+                remaining = Decimal::ZERO;
             }
         }
 
         // Compute the weighted average
-        let mut weighted_avg = Decimal::zero();
+        let mut weighted_avg = Decimal::ZERO;
         for (fill_price, fill_quantity) in fills.iter() {
             weighted_avg += fill_price * fill_quantity;
         }

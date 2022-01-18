@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use futures_util::SinkExt;
-use rust_decimal::{prelude::Zero, Decimal};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::{
@@ -79,19 +79,19 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
         }
 
         self.tx
-            .send(Log::Equity(Decimal::zero(), exchange.current_time()))
+            .send(Log::Equity(Decimal::ZERO, exchange.current_time()))
             .ok();
 
         for prepared_position in exchange.prepared_positions() {
-            self.tx.send(Log::Enter(prepared_position.clone())).ok();
+            self.tx.send(Log::Enter(*prepared_position)).ok();
         }
 
         for open_position in exchange.open_positions() {
-            self.tx.send(Log::Update(open_position.clone())).ok();
+            self.tx.send(Log::Update(*open_position)).ok();
         }
 
         for prepared_position in exchange.closed_positions().skip(self.sent_closed_positions) {
-            self.tx.send(Log::Exit(prepared_position.clone())).ok();
+            self.tx.send(Log::Exit(*prepared_position)).ok();
             self.sent_closed_positions += 1;
         }
 

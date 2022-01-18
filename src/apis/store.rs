@@ -82,7 +82,7 @@ impl<A: Api> Api for Store<A> {
         .unwrap();
 
         let mut out = Vec::new();
-        let mut next_key = key.clone();
+        let mut next_key = key;
         for data in data {
             match data {
                 (market, time, interval, Some(close), Some(volume)) => {
@@ -253,9 +253,7 @@ mod tests {
 
 fn blob_to_dec(vec: Vec<u8>) -> Decimal {
     let mut buf = [0; 16];
-    for i in 0..buf.len() {
-        buf[i] = vec[i];
-    }
+    buf.clone_from_slice(&vec[..]);
     Decimal::deserialize(buf)
 }
 
