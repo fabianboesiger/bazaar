@@ -1,10 +1,14 @@
-use std::{collections::{HashMap, HashSet}, cell::RefCell};
+use std::fmt;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
+};
 
 use super::Wallet;
 use crate::{
     apis::{Api, ApiError, Order, OrderType},
     strategies::{OnError, Options, Strategy},
-    Candle, CandleKey, Markets, Symbol, MarketInfo,
+    Candle, CandleKey, MarketInfo, Markets, Symbol,
 };
 use chrono::{DateTime, Duration, Utc};
 use futures_util::{future::join_all, try_join};
@@ -31,7 +35,7 @@ pub struct Exchange<A: Api> {
     open_positions: Vec<OpenPosition>,
     closed_positions: Vec<ClosedPosition>,
     to_close: RefCell<HashSet<PositionId>>,
-    candles: HashMap<Symbol, Option<Candle>>,
+    candles: HashMap<Symbol, VecDeque<(CandleKey, Option<Candle>)>>,
     markets: Markets,
     current_time: DateTime<Utc>,
     real_time: bool,
@@ -65,27 +69,23 @@ impl<A: Api> Exchange<A> {
 
     /// List all available markets.
     pub fn markets(&self) -> impl Iterator<Item = &MarketInfo> {
-        self
-            .markets
-            .markets()
-            .map(|(_, info)| info)
+        self.markets.markets().map(|(_, info)| info)
     }
 
     pub fn market(&self, symbol: Symbol) -> &MarketInfo {
-        self
-            .markets
-            .market(symbol)
-            .unwrap()
+        self.markets.market(symbol).unwrap()
     }
 
     /// Fetch the current candle of a market.
     pub fn candle(&self, market: Symbol) -> Option<&Candle> {
-        self.candles.get(&market)?.as_ref()
+        let front = self.candles.get(&market)?.front()?;
+        assert_eq!(front.0.time, self.current_time);
+        front.1.as_ref()
     }
 
     /// Begin watching a market.
     pub fn watch(&mut self, market: Symbol) {
-        self.candles.insert(market, None);
+        self.candles.insert(market, VecDeque::new());
     }
 
     /// Stop watching a market.
@@ -100,6 +100,9 @@ impl<A: Api> Exchange<A> {
             .candles
             .get(&position.symbol)
             .ok_or(PrepareError::MarketClosed)?
+            .front()
+            .ok_or(PrepareError::MarketClosed)?
+            .1
             .map(|candle| candle.close)
             .ok_or(PrepareError::MarketClosed)?;
         let quote_size = rounded_size * price;
@@ -120,8 +123,6 @@ impl<A: Api> Exchange<A> {
                     .map_err(|_| PrepareError::InsufficientAssets)?;
             }
         }
-
-        
 
         Ok(PreparedPosition {
             market: position.symbol,
@@ -161,6 +162,16 @@ impl<A: Api> Exchange<A> {
     /// Get wallet.
     pub fn wallet(&self) -> &Wallet {
         &self.wallet
+    }
+
+    pub fn total(&self) -> Decimal {
+        let wallet_total = self.wallet.available(self.api.quote_asset());
+        let positions_total: Decimal = self
+            .open_positions
+            .iter()
+            .map(|position| position.enter_size * position.enter_price + position.pnl())
+            .sum();
+        wallet_total + positions_total
     }
 
     pub fn round_size(&self, symbol: Symbol, size: Decimal) -> Decimal {
@@ -207,46 +218,66 @@ impl<A: Api> Exchange<A> {
                     },
                     async {
                         log::trace!("Update candles.");
-                        let mut candles_missing: Vec<Symbol> =
-                            self.candles.keys().cloned().collect();
+                        let mut candles_missing: Vec<Symbol> = self
+                            .candles
+                            .iter()
+                            .filter(|(_asset, candles)| {
+                                candles.is_empty() || candles.front().is_none()
+                            })
+                            .map(|(asset, _)| *asset)
+                            .collect();
 
                         // While the next candle is not already available
                         // and we don't have all candles, fetch candles.
-                        while !candles_missing.is_empty() && wait_duration <= -options.interval {
+                        while !candles_missing.is_empty() {
                             log::trace!("Some candles are missing, fetching them.");
                             // Fetch all candles concurrently.
                             let mut futures = Vec::new();
                             for &market in candles_missing.iter() {
-                                futures.push(self.api.get_candle(CandleKey {
+                                futures.push(self.api.get_candles(CandleKey {
                                     market,
                                     time: self.current_time,
                                     interval: options.interval,
                                 }));
                             }
                             let candles = join_all(futures).await;
-                            for (asset, candle) in candles_missing.iter().zip(candles) {
-                                self.candles.insert(*asset, candle?);
+                            for (asset, new_candles) in candles_missing.iter().zip(candles) {
+                                if let Some(candles) = self.candles.get_mut(asset) {
+                                    candles
+                                        .append(&mut VecDeque::from_iter(new_candles?.into_iter()));
+                                }
                             }
 
                             // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.drain_filter.
                             let mut i = 0;
                             while i < candles_missing.len() {
-                                if self.candles.contains_key(&candles_missing[i]) {
+                                // Remove present candles from missing list.
+                                if self.candles.contains_key(&candles_missing[i])
+                                    && self
+                                        .candles
+                                        .get(&candles_missing[i])
+                                        .unwrap()
+                                        .front()
+                                        .is_some()
+                                {
                                     candles_missing.remove(i);
                                 } else {
                                     i += 1;
                                 }
                             }
 
-                            if !candles_missing.is_empty() {
+                            if wait_duration <= -options.interval {
+                                log::trace!("Stop waiting for new candles.");
+                                break;
+                            } else if !candles_missing.is_empty() {
                                 log::trace!("Waiting for new candles.");
                                 // There still are some candles that could not be fetched.
                                 // Wait a bit and try again.
-                                wait_duration = self.current_time + options.interval - Utc::now();
                                 tokio::time::sleep(
-                                    Duration::seconds(1).to_std().expect("Converting to std"),
+                                    Duration::seconds(3).to_std().expect("Converting to std"),
                                 )
                                 .await;
+                                wait_duration = self.current_time + options.interval - Utc::now();
                             }
                         }
 
@@ -254,8 +285,27 @@ impl<A: Api> Exchange<A> {
                     }
                 )?;
 
+                for open_position in &mut self.open_positions {
+                    open_position.current_time = self.current_time;
+                    open_position.current_price = self
+                        .candles
+                        .get(&open_position.market)
+                        .unwrap()
+                        .front()
+                        .unwrap()
+                        .1
+                        .unwrap()
+                        .close;
+                }
+
                 // Evaluate strategy and handle errors.
-                log::info!("Running strategy for time {}.", self.current_time);
+                log::info!(
+                    "Running strategy for time {}, open: {}, closed: {}, total: {}.",
+                    self.current_time,
+                    self.open_positions.len(),
+                    self.closed_positions.len(),
+                    self.total()
+                );
                 strategy.eval(self)?;
                 log::trace!("Exiting positions.");
                 self.exit_many().await?;
@@ -263,6 +313,12 @@ impl<A: Api> Exchange<A> {
                 self.enter_many().await?;
                 self.step(&options);
             } else {
+                /*
+                for (_, candles) in &self.candles {
+                    assert!(candles.is_empty(), "{:?}", candles);
+                }
+                */
+                log::trace!("Waiting {} for new candles.", wait_duration);
                 // Wait until next candles should be available.
                 self.real_time = true;
                 tokio::time::sleep(wait_duration.to_std().expect("Converting to std")).await;
@@ -271,9 +327,10 @@ impl<A: Api> Exchange<A> {
     }
 
     fn step(&mut self, options: &Options) {
+        log::trace!("Advancing time!");
         self.current_time = self.current_time + options.interval;
-        for candle in self.candles.values_mut() {
-            *candle = None;
+        for candles in self.candles.values_mut() {
+            candles.pop_front();
         }
     }
 
@@ -296,9 +353,8 @@ impl<A: Api> Exchange<A> {
         )?;
         let options = strategy.init(&mut self)?;
 
-        if A::LIVE_TRADING_ENABLED && !options.live_trading {
-            log::warn!("This strategy does not support live trading.");
-            return Ok(());
+        if A::LIVE_TRADING_ENABLED {
+            log::warn!("Trading live on exchange!");
         }
 
         loop {
@@ -339,6 +395,12 @@ impl<A: Api> Exchange<A> {
         }
         for order_result in join_all(order_futures).await {
             let open_position = order_result?;
+            log::info!(
+                "Enter position: {} {} {}",
+                open_position.side,
+                open_position.size,
+                open_position.market
+            );
             let quote_enter_size = open_position.enter_size * open_position.enter_price;
             //let quote_reserved_size = open_position.rounded_size * open_position.price;
 
@@ -373,8 +435,7 @@ impl<A: Api> Exchange<A> {
             }
         }
         */
-        self.wallet
-            .free_all(self.api.quote_asset());
+        self.wallet.free_all(self.api.quote_asset());
 
         Ok(())
     }
@@ -390,7 +451,15 @@ impl<A: Api> Exchange<A> {
         }
         for order_result in join_all(order_futures).await {
             let closed_position = order_result?;
-            let quote_exit_size = closed_position.exit_size * closed_position.exit_price;
+            log::info!(
+                "Exit position: {} {} {}, PnL is {}",
+                closed_position.side,
+                closed_position.size,
+                closed_position.market,
+                closed_position.pnl()
+            );
+            let quote_enter_size = closed_position.enter_size * closed_position.enter_price;
+            let quote_exit_size = quote_enter_size + closed_position.pnl();
 
             match closed_position.market {
                 Symbol::Perp(_) => {
@@ -405,7 +474,11 @@ impl<A: Api> Exchange<A> {
         Ok(())
     }
 
-    async fn enter_one(&self, prepared_position: PreparedPosition) -> Result<OpenPosition, ApiError> {
+    async fn enter_one(
+        &self,
+        prepared_position: PreparedPosition,
+    ) -> Result<OpenPosition, ApiError> {
+        log::trace!("Entering one position");
         let update = self
             .api
             .place_order(Order {
@@ -415,6 +488,7 @@ impl<A: Api> Exchange<A> {
                 order_type: OrderType::Market,
                 reduce_only: false,
                 time: self.current_time,
+                price: prepared_position.price,
             })
             .await?;
 
@@ -430,6 +504,8 @@ impl<A: Api> Exchange<A> {
             time: prepared_position.time,
             enter_time: update.time,
             id: prepared_position.id,
+            current_price: update.price,
+            current_time: update.time,
         })
     }
 
@@ -443,6 +519,7 @@ impl<A: Api> Exchange<A> {
                 order_type: OrderType::Market,
                 reduce_only: true,
                 time: self.current_time,
+                price: open_position.current_price,
             })
             .await?;
 
@@ -456,7 +533,6 @@ impl<A: Api> Exchange<A> {
             enter_price: open_position.enter_price,
             enter_size: open_position.enter_size,
             exit_price: update.price,
-            exit_size: update.size,
             time: open_position.time,
             enter_time: open_position.enter_time,
             exit_time: update.time,
@@ -479,6 +555,16 @@ pub struct Position {
 pub trait PositionData {
     fn symbol(&self) -> Symbol;
     fn id(&self) -> PositionId;
+    fn size(&self) -> Decimal;
+    fn enter_price(&self) -> Decimal;
+    fn exit_price(&self) -> Decimal;
+    fn side(&self) -> Side;
+    fn pnl(&self) -> Decimal {
+        match self.side() {
+            Side::Buy => self.size() * (self.exit_price() - self.enter_price()),
+            Side::Sell => self.size() * (self.enter_price() - self.exit_price()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -500,6 +586,22 @@ impl PositionData for PreparedPosition {
 
     fn id(&self) -> PositionId {
         self.id
+    }
+
+    fn side(&self) -> Side {
+        self.side
+    }
+
+    fn size(&self) -> Decimal {
+        self.size
+    }
+
+    fn enter_price(&self) -> Decimal {
+        self.price
+    }
+
+    fn exit_price(&self) -> Decimal {
+        self.price
     }
 }
 
@@ -530,6 +632,8 @@ pub struct OpenPosition {
     time: DateTime<Utc>,
     enter_time: DateTime<Utc>,
     id: PositionId,
+    current_price: Decimal,
+    current_time: DateTime<Utc>,
 }
 
 impl PositionData for OpenPosition {
@@ -539,6 +643,22 @@ impl PositionData for OpenPosition {
 
     fn id(&self) -> PositionId {
         self.id
+    }
+
+    fn side(&self) -> Side {
+        self.side
+    }
+
+    fn size(&self) -> Decimal {
+        self.size
+    }
+
+    fn enter_price(&self) -> Decimal {
+        self.enter_price
+    }
+
+    fn exit_price(&self) -> Decimal {
+        self.current_price
     }
 }
 
@@ -553,7 +673,6 @@ pub struct ClosedPosition {
     enter_price: Decimal,
     enter_size: Decimal,
     exit_price: Decimal,
-    exit_size: Decimal,
     time: DateTime<Utc>,
     enter_time: DateTime<Utc>,
     exit_time: DateTime<Utc>,
@@ -567,6 +686,22 @@ impl PositionData for ClosedPosition {
 
     fn id(&self) -> PositionId {
         self.id
+    }
+
+    fn side(&self) -> Side {
+        self.side
+    }
+
+    fn size(&self) -> Decimal {
+        self.size
+    }
+
+    fn enter_price(&self) -> Decimal {
+        self.enter_price
+    }
+
+    fn exit_price(&self) -> Decimal {
+        self.exit_price
     }
 }
 
@@ -582,5 +717,18 @@ impl Side {
             Self::Buy => Self::Sell,
             Self::Sell => Self::Buy,
         }
+    }
+}
+
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Side::Buy => "buy",
+                Side::Sell => "sell",
+            }
+        )
     }
 }

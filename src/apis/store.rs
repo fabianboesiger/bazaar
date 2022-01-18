@@ -1,5 +1,3 @@
-use std::{pin::Pin, ops::DerefMut};
-
 use crate::{
     apis::{Api, ApiError, Order, OrderInfo},
     Asset, Candle, CandleKey, Markets, Symbol, Wallet,
@@ -7,45 +5,16 @@ use crate::{
 
 use async_trait::async_trait;
 use chrono::{Duration, TimeZone, Utc};
-use futures_util::{lock::Mutex, Stream, StreamExt};
 use rust_decimal::prelude::*;
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool, SqliteConnection, Error as SqlxError, Connection};
-use cht::map::HashMap;
-use deadpool::managed::{Manager, RecycleResult, Pool, Object};
-
-struct DbPool {
-    options: SqliteConnectOptions,
-}
-
-impl DbPool {
-    fn new(options: SqliteConnectOptions) -> DbPool {
-        DbPool {
-            options,
-        }
-    }
-}
-
-#[async_trait]
-impl Manager for DbPool {
-    type Type = SqliteConnection;
-    type Error = SqlxError;
-
-    async fn create(&self) -> Result<SqliteConnection, SqlxError> {
-        SqliteConnection::connect_with(&self.options).await
-        
-    }
-    async fn recycle(&self, obj: &mut SqliteConnection) -> RecycleResult<SqlxError> {
-        Ok(obj.ping().await?)
-    }
-}
+use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, SqlitePool};
 
 pub struct Store<A>
 where
     A: Api,
 {
     api: A,
-    pool: Pool<DbPool>,
-    cache: HashMap<CandleKey, Option<Candle>>,
+    pool: SqlitePool,
+    //conn: Mutex<SqliteConnection>,
 }
 
 impl<A> Store<A>
@@ -55,12 +24,15 @@ where
     pub async fn new(api: A) -> Self {
         std::fs::create_dir_all("./.store").unwrap();
 
-        let options = SqliteConnectOptions::new()
+        let mut options = SqliteConnectOptions::new()
             .filename(format!("./.store/{}.db", A::NAME))
             .create_if_missing(true);
 
-        let pool: Pool<DbPool, Object<DbPool>> = Pool::builder(DbPool::new(options)).build().unwrap();
-        
+        options.disable_statement_logging();
+
+        //let conn = Mutex::new(SqliteConnection::connect_with(&options).await.unwrap());
+
+        let pool = SqlitePool::connect_with(options).await.unwrap();
 
         sqlx::query(
             "
@@ -69,19 +41,16 @@ where
                     timestamp INTEGER,
                     close BLOB,
                     volume BLOB,
-                    interval INTEGER
+                    interval INTEGER,
+                    PRIMARY KEY(market, timestamp, interval)
                 )
             ",
         )
-        .execute(pool.get().await.unwrap().deref_mut())
+        .execute(/*&mut *conn.lock().await*/ &pool)
         .await
         .unwrap();
 
-        Store {
-            api,
-            pool,
-            cache: HashMap::new(),
-        }
+        Store { api, pool }
     }
 }
 
@@ -90,37 +59,99 @@ impl<A: Api> Api for Store<A> {
     const NAME: &'static str = A::NAME;
     const LIVE_TRADING_ENABLED: bool = A::LIVE_TRADING_ENABLED;
 
-    async fn get_candle(&self, key: CandleKey) -> Result<Option<Candle>, ApiError> {
-        if let Some(candle) = self.cache.remove(&key) {
-            Ok(candle)
-        } else {
-
-            let data: Vec<(String, i64, i64, Option<Vec<u8>>, Option<Vec<u8>>)> = sqlx::query_as(
-                "
+    async fn get_candles(
+        &self,
+        key: CandleKey,
+    ) -> Result<Vec<(CandleKey, Option<Candle>)>, ApiError> {
+        let data: Vec<(String, i64, i64, Option<Vec<u8>>, Option<Vec<u8>>)> = sqlx::query_as(
+            "
                     SELECT market, timestamp, interval, close, volume
                     FROM data
                     WHERE market = $1
                     AND timestamp >= $2
-                    AND timestamp < $3
-                    AND interval = $4
+                    AND interval = $3
                     ORDER BY timestamp ASC
+                    LIMIT 5000
                 ",
-            )
-            .bind(key.market.to_string())
-            .bind(key.time.timestamp())
-            .bind((key.time + key.interval * 5000).timestamp())
-            .bind(key.interval.num_seconds())
-            .fetch_all(self.pool.get().await.unwrap().deref_mut())
-            .await
-            .unwrap();
+        )
+        .bind(key.market.to_string())
+        .bind(key.time.timestamp())
+        .bind(key.interval.num_seconds())
+        .fetch_all(/*&mut *self.conn.lock().await*/ &self.pool)
+        .await
+        .unwrap();
 
-            if data.is_empty() {
-                log::trace!("Store was empty, fetching using underlying API.");
+        let mut out = Vec::new();
+        let mut next_key = key.clone();
+        for data in data {
+            match data {
+                (market, time, interval, Some(close), Some(volume)) => {
+                    let curr_key = CandleKey {
+                        market: Symbol::new(market),
+                        time: Utc.timestamp(time, 0),
+                        interval: Duration::seconds(interval),
+                    };
 
+                    if curr_key != next_key {
+                        break;
+                    }
+                    out.push((
+                        curr_key,
+                        Some(Candle {
+                            close: blob_to_dec(close),
+                            volume: blob_to_dec(volume),
+                        }),
+                    ));
+                }
+                (market, time, interval, None, None) => {
+                    let curr_key = CandleKey {
+                        market: Symbol::new(market),
+                        time: Utc.timestamp(time, 0),
+                        interval: Duration::seconds(interval),
+                    };
+
+                    if curr_key != next_key {
+                        break;
+                    }
+
+                    out.push((curr_key, None));
+                }
+                _ => {
+                    unreachable!();
+                }
+            }
+            next_key.time = next_key.time + next_key.interval;
+        }
+
+        if out.is_empty() {
+            log::trace!("Store was empty, fetching using underlying API.");
+
+            let candles = self.api.get_candles(key).await?;
+            log::trace!("Got candles!");
+
+            /*
+            for (i, candle) in candles.iter().enumerate() {
+                let curr_key = CandleKey {
+                    time: key.time + key.interval * i as i32,
+                    ..key
+                };
+
+                sqlx::query("INSERT INTO data (market, timestamp, close, volume, interval) VALUES ($1, $2, $3, $4, $5)")
+                    .bind(curr_key.market.to_string())
+                    .bind(curr_key.time.timestamp())
+                    .bind(candle.as_ref().map(|candle| dec_to_blob(candle.close)))
+                    .bind(candle.as_ref().map(|candle| dec_to_blob(candle.volume)))
+                    .bind(curr_key.interval.num_seconds())
+                    .execute(&mut *self.conn.lock().await).await.unwrap();
+            }
+            */
+
+            const CHUNK_SIZE: usize = 100;
+            for chunk in candles.chunks(CHUNK_SIZE) {
                 let mut query_string = String::from(
-                    "INSERT INTO data (market, timestamp, close, volume, interval) VALUES ",
+                    "INSERT OR IGNORE INTO data (market, timestamp, close, volume, interval) VALUES ",
                 );
-                for i in 0..5000 {
+                for (i, _candle) in chunk.iter().enumerate() {
                     query_string += &format!(
                         "(${},${},${},${},${}),",
                         i * 5 + 1,
@@ -133,68 +164,24 @@ impl<A: Api> Api for Store<A> {
                 query_string.pop();
                 let mut query = sqlx::query(&query_string);
 
-                for i in 0..5000 {
-                    log::trace!("Fetching candle {}", i);
-                    let fetch_time = key.time + key.interval * i;
-                    let fetch_key = CandleKey {
-                        time: fetch_time,
-                        ..key
-                    };
-                    let candle = self.api.get_candle(fetch_key).await?;
-                    self.cache.insert(fetch_key, candle);
-
+                for (curr_key, candle) in chunk.iter() {
                     query = query
-                        .bind(fetch_key.market.to_string())
-                        .bind(fetch_key.time.timestamp())
+                        .bind(curr_key.market.to_string())
+                        .bind(curr_key.time.timestamp())
                         .bind(candle.as_ref().map(|candle| dec_to_blob(candle.close)))
                         .bind(candle.as_ref().map(|candle| dec_to_blob(candle.volume)))
-                        .bind(fetch_key.interval.num_seconds());
-                }
-                log::trace!("Getting connection");
-                let mut obj = self.pool.get().await.unwrap();
-                let connection = obj.deref_mut();
-                log::trace!("Executing insert");
-                query.execute(connection).await.unwrap();
-                log::trace!("Done executing insert");
-
-                Ok(self.cache.remove(&key).unwrap())
-            } else {
-                log::debug!("Store was non empty, locking.");
-                log::debug!("Store was non empty, locked.");
-
-                for data in data {
-                    match data {
-                        (market, time, interval, Some(close), Some(volume)) => {
-                            self.cache.insert(
-                                CandleKey {
-                                    market: Symbol::new(market),
-                                    time: Utc.timestamp(time, 0),
-                                    interval: Duration::seconds(interval),
-                                },
-                                Some(Candle {
-                                    close: blob_to_dec(close),
-                                    volume: blob_to_dec(volume),
-                                }),
-                            );
-                        }
-                        (market, time, interval, None, None) => {
-                            self.cache.insert(
-                                CandleKey {
-                                    market: Symbol::new(market),
-                                    time: Utc.timestamp(time, 0),
-                                    interval: Duration::seconds(interval),
-                                },
-                                None,
-                            );
-                        }
-                        _ => {
-                            unreachable!();
-                        }
-                    }
+                        .bind(curr_key.interval.num_seconds());
                 }
 
-                Ok(self.cache.remove(&key).unwrap())
+                query
+                    .execute(/*&mut *self.conn.lock().await*/ &self.pool)
+                    .await
+                    .unwrap();
             }
+
+            Ok(candles)
+        } else {
+            Ok(out)
         }
     }
 
@@ -221,6 +208,10 @@ impl<A: Api> Api for Store<A> {
     fn quote_asset(&self) -> Asset {
         self.api.quote_asset()
     }
+
+    async fn order_fee(&self) -> Decimal {
+        self.api.order_fee().await
+    }
 }
 
 #[cfg(test)]
@@ -243,16 +234,16 @@ mod tests {
 
         let cache = Store::new(Ftx::new()).await;
         let mut time = Utc.ymd(2021, 6, 1).and_hms(0, 0, 0);
-        for i in 0..10000 {
+        for _ in 0..10000 {
             let candle = cache
-                .get_candle(CandleKey {
+                .get_candles(CandleKey {
                     market: Symbol::Perp(Asset::new("BTC")),
                     time,
                     interval: Duration::seconds(15),
                 })
                 .await;
 
-            if candle.unwrap().is_none() {
+            if candle.unwrap()[0].1.is_none() {
                 panic!("No candle received for time {}.", time);
             }
             time = time + Duration::seconds(15);

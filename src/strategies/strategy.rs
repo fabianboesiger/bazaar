@@ -18,8 +18,6 @@ pub struct Options {
     pub interval: Duration,
     /// Specifies how errors caused by the strategy should be handled,
     pub on_error: OnError,
-    /// Explicitly set this to true if you want this strategy to be allowed to execute live trades.
-    pub live_trading: bool,
 }
 
 impl Default for Options {
@@ -27,7 +25,6 @@ impl Default for Options {
         Options {
             interval: Duration::minutes(1),
             on_error: OnError::ExitAllPositionsAndReturn,
-            live_trading: false,
         }
     }
 }

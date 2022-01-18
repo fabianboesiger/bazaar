@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 
 use crate::Symbol;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Candle {
     pub close: Decimal,
     pub volume: Decimal,

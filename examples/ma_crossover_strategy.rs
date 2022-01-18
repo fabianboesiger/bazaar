@@ -1,27 +1,30 @@
 use bazaar::{
-    apis::{Api, Ftx, Simulate, Store},
-    strategies::{Monitor, Options, Strategy},
-    AnyError, Asset, Exchange, Position, Side, Symbol, Wallet, PositionData,
+    apis::{Api, Ftx},
+    strategies::{Options, Strategy},
+    AnyError, Bazaar, Exchange, Position, Side, Symbol,
 };
 use chrono::{Duration, TimeZone, Utc};
+use rolling_norm::Series;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
-use rolling_norm::Series;
 
+// Implements a simple MA crossover strategy using two moving averages with periods FAST and SLOW.
 pub struct MaCrossoverStrategy<const FAST: usize, const SLOW: usize> {
     // Keep track of a two series to compute the moving averages.
     fast: Series<f32, FAST>,
     slow: Series<f32, SLOW>,
     // The symbol to trade on.
     symbol: Symbol,
+    last_long_crossover: bool,
 }
 
 impl<const FAST: usize, const SLOW: usize> MaCrossoverStrategy<FAST, SLOW> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         MaCrossoverStrategy {
             fast: Series::new(),
             slow: Series::new(),
             symbol: Symbol::perp("BTC"),
+            last_long_crossover: false,
         }
     }
 }
@@ -30,6 +33,7 @@ impl<const FAST: usize, const SLOW: usize> MaCrossoverStrategy<FAST, SLOW> {
 impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverStrategy<FAST, SLOW> {
     const NAME: &'static str = "MA Crossover Strategy";
 
+    // Inititalize the strategy.
     fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Options, AnyError> {
         // Begin watching the BTC-PERP ticker as we want to trade it.
         exchange.watch(self.symbol);
@@ -40,22 +44,44 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
         })
     }
 
+    // Evaluate the strategy periodically.
     fn eval(&mut self, exchange: &mut Exchange<A>) -> Result<(), AnyError> {
-        let price = exchange.candle(self.symbol).unwrap().close.to_f32().unwrap();
+        let price = exchange
+            .candle(self.symbol)
+            .unwrap()
+            .close
+            .to_f32()
+            .unwrap();
         self.fast.insert(price);
         self.slow.insert(price);
 
-        let position = exchange
-            .prepare(Position {
+        let curr_long_crossover = self.fast.mean() > self.slow.mean();
+
+        if curr_long_crossover && !self.last_long_crossover {
+            // exit all positions and go long.
+            for position in exchange.open_positions() {
+                exchange.exit(position);
+            }
+            let position = exchange.prepare(Position {
                 symbol: self.symbol,
                 size: dec!(0.01),
                 side: Side::Buy,
             })?;
-        exchange.enter(position);
-        
-        for position in exchange.open_positions() {
-            exchange.exit(position);
+            exchange.enter(position);
+        } else if !curr_long_crossover && self.last_long_crossover {
+            // exit all positions and go short.
+            for position in exchange.open_positions() {
+                exchange.exit(position);
+            }
+            let position = exchange.prepare(Position {
+                symbol: self.symbol,
+                size: dec!(0.01),
+                side: Side::Sell,
+            })?;
+            exchange.enter(position);
         }
+
+        self.last_long_crossover = curr_long_crossover;
 
         Ok(())
     }
@@ -64,24 +90,15 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
 #[tokio::main]
 async fn main() -> Result<(), AnyError> {
     simple_logger::SimpleLogger::new()
-        .with_level(log::LevelFilter::Debug)
+        .with_level(log::LevelFilter::Trace)
         .with_utc_timestamps()
         .init()
         .unwrap();
 
-    // Set up wallet for simulation.
-    let mut wallet = Wallet::new();
-    wallet.deposit(dec!(1000), Asset::new("USD"));
-
-    // Set up API. FTX as backend with local store enabled and simulated trades.
-    let api = Simulate::new(Store::new(Ftx::new()).await, wallet, dec!(0.001));
-
-    // Set up exchange using the API as defined above.
-    let exchange = Exchange::new(api, Utc.ymd(2021, 6, 1).and_hms(0, 0, 0));
-
-    // Create strategy instance, and monitor the performance.
-    let strategy = Monitor::new(MaCrossoverStrategy::<20, 40>::new(), "127.0.0.1:4444".parse()?);
-
-    // Run the strategy on the exchange.
-    exchange.run(strategy).await
+    Bazaar {
+        start_time: Utc.ymd(2022, 1, 10).and_hms(0, 0, 0),
+        ..Default::default()
+    }
+    .run(Ftx::new(), MaCrossoverStrategy::<20, 40>::new())
+    .await
 }

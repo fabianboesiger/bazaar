@@ -4,18 +4,17 @@ use crate::{
     Asset, Candle, CandleKey, MarketInfo, Markets, Side, Symbol, Wallet,
 };
 use async_trait::async_trait;
+use chrono::Utc;
 use ftx::{
     options::{Endpoint, Options},
     rest::{GetHistoricalPrices, GetWalletBalances, PlaceOrder, Rest},
 };
 use rust_decimal::prelude::*;
 use std::env;
-use cht::map::HashMap;
 
 pub struct Ftx {
     rest: Rest,
     //options: Options,
-    cache: HashMap<CandleKey, Option<Candle>>,
 }
 
 impl Ftx {
@@ -36,7 +35,6 @@ impl Ftx {
         Ftx {
             rest: Rest::new(options.clone()),
             //options,
-            cache: HashMap::new(),
         }
     }
 }
@@ -59,11 +57,11 @@ impl Api for Ftx {
     }
     */
 
-    async fn get_candle(&self, key: CandleKey) -> Result<Option<Candle>, ApiError> {
-        if let Some(candle) = self.cache.remove(&key) {
-            Ok(candle)
-        } else {
-            let candles: Vec<(CandleKey, Candle)> = self
+    async fn get_candles(
+        &self,
+        key: CandleKey,
+    ) -> Result<Vec<(CandleKey, Option<Candle>)>, ApiError> {
+        let candles: Vec<(CandleKey, Candle)> = self
             .rest
             .request(GetHistoricalPrices {
                 market_name: self.format_market(key.market),
@@ -89,19 +87,45 @@ impl Api for Ftx {
             })
             .collect();
 
-            for i in 0..5000 {
-                self.cache.insert(CandleKey {
-                    time: key.time + key.interval * i,
-                    ..key
-                }, None);
+        let mut out = Vec::new();
+        let mut next_key = key.clone();
+        /*
+        for (key, candle) in candles {
+            if next_key != key {
+                break;
             }
-            for (key, candle) in candles {
-                self.cache.insert(key, Some(candle));
-            }
+            out.push(Some(candle));
+            next_key.time  = next_key.time + next_key.interval;
+        }
+        for _ in out.len()..5000 {
+            out.push(None);
+        }
+        */
 
-            Ok(self.cache.remove(&key).flatten())
+        'result_loop: for (curr_key, candle) in candles {
+            while next_key != curr_key {
+                log::trace!("Got NO candle for time {}", next_key.time);
+                out.push((next_key, None));
+                next_key.time = next_key.time + next_key.interval;
+                if next_key.time >= key.time + key.interval * 5000 {
+                    break 'result_loop;
+                }
+            }
+            assert_eq!(next_key, curr_key);
+            log::trace!("Got candle for time {}", next_key.time);
+            out.push((curr_key, Some(candle)));
+            next_key.time = next_key.time + next_key.interval;
+        }
+        for _ in out.len()..5000 {
+            // Do not fill candles in the future with none.
+            if next_key.time >= Utc::now() - next_key.interval * 2 {
+                break;
+            }
+            out.push((next_key, None));
+            next_key.time = next_key.time + next_key.interval;
         }
 
+        Ok(out)
     }
     /*
     async fn price_update(&self, asset: Asset) -> Box<dyn Stream<Item = Candle>> {
@@ -236,5 +260,10 @@ impl Api for Ftx {
 
     fn quote_asset(&self) -> Asset {
         Asset::new("USD")
+    }
+
+    async fn order_fee(&self) -> Decimal {
+        // 0.0007 = 0.07%
+        Decimal::new(7, 4)
     }
 }

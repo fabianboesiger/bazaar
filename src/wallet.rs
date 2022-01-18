@@ -96,26 +96,12 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn withdraw_long() {
+    fn deposit_withdraw() {
         let mut wallet = Wallet::new();
         let asset = Asset::new("BTC");
         wallet.deposit(dec!(10), asset);
         wallet.withdraw(dec!(10), asset).unwrap_err();
-        wallet.withdraw(dec!(-10), asset).unwrap_err();
         wallet.reserve(dec!(10), asset).unwrap();
-        wallet.withdraw(dec!(-10), asset).unwrap_err();
         wallet.withdraw(dec!(10), asset).unwrap();
-    }
-
-    #[test]
-    fn withdraw_short() {
-        let mut wallet = Wallet::new();
-        let asset = Asset::new("BTC");
-        wallet.deposit(dec!(-10), asset);
-        wallet.withdraw(dec!(-10), asset).unwrap_err();
-        wallet.withdraw(dec!(10), asset).unwrap_err();
-        wallet.reserve(dec!(-10), asset).unwrap();
-        wallet.withdraw(dec!(10), asset).unwrap_err();
-        wallet.withdraw(dec!(-10), asset).unwrap();
     }
 }

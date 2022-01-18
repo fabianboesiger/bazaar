@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
-use rust_decimal::{Decimal, prelude::Zero};
+use futures_util::SinkExt;
+use rust_decimal::{prelude::Zero, Decimal};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::{
     net::TcpStream,
     sync::mpsc::{unbounded_channel, UnboundedSender},
 };
-use futures_util::SinkExt;
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::{apis::Api, AnyError, ClosedPosition, Exchange, OpenPosition, PreparedPosition};
@@ -37,6 +37,8 @@ impl<A: Api, S: Strategy<A>> Monitor<A, S> {
                 }
             } else {
                 log::error!("Couldn't connect monitor.");
+
+                while let Some(_log) = rx.recv().await {}
             }
         });
 
@@ -57,7 +59,13 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
         let result = self.strategy.init(exchange);
 
         if let Ok(_options) = &result {
-            self.tx.send(Log::Init(Self::NAME.to_owned(), A::NAME.to_owned(), A::LIVE_TRADING_ENABLED)).ok();
+            self.tx
+                .send(Log::Init(
+                    Self::NAME.to_owned(),
+                    A::NAME.to_owned(),
+                    A::LIVE_TRADING_ENABLED,
+                ))
+                .ok();
         }
 
         result
@@ -69,9 +77,11 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
         if let Err(err) = &result {
             self.tx.send(Log::Error(format!("{}", err))).ok();
         }
-        
-        self.tx.send(Log::Equity(Decimal::zero(), exchange.current_time())).ok();
-        
+
+        self.tx
+            .send(Log::Equity(Decimal::zero(), exchange.current_time()))
+            .ok();
+
         for prepared_position in exchange.prepared_positions() {
             self.tx.send(Log::Enter(prepared_position.clone())).ok();
         }

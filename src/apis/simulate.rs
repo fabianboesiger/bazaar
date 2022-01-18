@@ -3,10 +3,8 @@ use crate::{
     apis::{ApiError, Order, OrderInfo},
     Asset, Candle, CandleKey, Markets, Symbol, Wallet,
 };
-use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
 use futures_util::lock::Mutex;
 use rust_decimal::prelude::*;
 
@@ -14,14 +12,9 @@ pub struct Simulate<A>
 where
     A: Api,
 {
-    wallet: Wallet,
+    wallet: Mutex<Wallet>,
     api: A,
     //orderbooks: HashMap<Symbol, Orderbook>,
-    order_fee: Decimal,
-    cache: Mutex<(
-        Option<(DateTime<Utc>, Duration)>,
-        HashMap<Symbol, Option<Candle>>,
-    )>,
 }
 
 impl<A> Simulate<A>
@@ -30,13 +23,11 @@ where
 {
     /// Create a simulation middleware for an api by providing a wallet
     /// with your deposit to simulate, and the fee per orders.
-    pub fn new(api: A, wallet: Wallet, order_fee: Decimal) -> Self {
+    pub fn new(api: A, wallet: Wallet) -> Self {
         Simulate {
-            wallet,
+            wallet: Mutex::new(wallet),
             api,
             //orderbooks: HashMap::new(),
-            order_fee,
-            cache: Mutex::new((None, HashMap::new())),
         }
     }
 }
@@ -46,33 +37,23 @@ impl<A: Api> Api for Simulate<A> {
     const NAME: &'static str = A::NAME;
     const LIVE_TRADING_ENABLED: bool = false;
 
-    async fn get_candle(&self, key: CandleKey) -> Result<Option<Candle>, ApiError> {
-        let candle = self.api.get_candle(key).await?;
-
-        let mut cache = self.cache.lock().await;
-        if let Some((current_time, interval)) = &mut cache.0 {
-            if *current_time != key.time {
-                assert_eq!(*interval, key.interval);
-                *current_time = *current_time + key.interval;
-                assert_eq!(*current_time, key.time);
-            }
-        } else {
-            cache.0 = Some((key.time, key.interval));
-        }
-
-        cache.1.insert(key.market, candle.clone());
-
-        Ok(candle)
+    async fn get_candles(
+        &self,
+        key: CandleKey,
+    ) -> Result<Vec<(CandleKey, Option<Candle>)>, ApiError> {
+        self.api.get_candles(key).await
     }
 
     async fn place_order(&self, order: Order) -> Result<OrderInfo, ApiError> {
-        let cache = self.cache.lock().await;
-        assert_eq!(cache.0.unwrap().0, order.time);
-        let candle = cache.1.get(&order.market).unwrap().unwrap();
+        //let quote_size = order.size * order.price;
+        //let wallet = self.wallet.lock().await;
+
+        //wallet.reserve(quote_size, self.quote_asset()).unwrap();
+        //wallet.withdraw(quote_size, self.quote_asset()).unwrap();
 
         Ok(OrderInfo {
-            size: order.size * (Decimal::one() - self.order_fee),
-            price: candle.close,
+            size: order.size * (Decimal::one() - self.api.order_fee().await),
+            price: order.price,
             time: order.time,
         })
     }
@@ -87,7 +68,7 @@ impl<A: Api> Api for Simulate<A> {
 
     async fn update_wallet(&self, wallet: &mut Wallet) -> Result<(), ApiError> {
         if wallet.is_fresh() {
-            *wallet = self.wallet.clone();
+            *wallet = self.wallet.lock().await.clone();
         }
 
         Ok(())
@@ -124,5 +105,9 @@ impl<A: Api> Api for Simulate<A> {
 
     fn quote_asset(&self) -> Asset {
         self.api.quote_asset()
+    }
+
+    async fn order_fee(&self) -> Decimal {
+        self.api.order_fee().await
     }
 }
