@@ -70,8 +70,12 @@ impl Wallet {
         free_qty += reserved_qty;
     }
 
-    pub fn available(&self, asset: Asset) -> Decimal {
+    pub fn free_sum(&self, asset: Asset) -> Decimal {
         self.free.get(&asset).cloned().unwrap_or(Decimal::ZERO)
+    }
+
+    pub fn total_sum(&self, asset: Asset) -> Decimal {
+        self.total.get(&asset).cloned().unwrap_or(Decimal::ZERO)
     }
 
     /// Withdraw some quantity of an asset.

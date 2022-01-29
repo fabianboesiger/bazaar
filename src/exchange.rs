@@ -32,7 +32,7 @@ pub enum PrepareError {
 pub struct Exchange<A: Api> {
     wallet: Wallet,
     prepared_positions: Vec<PreparedPosition>,
-    open_positions: Vec<OpenPosition>,
+    open_positions: Vec<OpenedPosition>,
     closed_positions: Vec<ClosedPosition>,
     to_close: RefCell<HashSet<PositionId>>,
     candles: HashMap<Symbol, VecDeque<(CandleKey, Option<Candle>)>>,
@@ -93,7 +93,10 @@ impl<A: Api> Exchange<A> {
         self.candles.remove(&market);
     }
 
-    pub fn prepare(&mut self, position: Position) -> Result<PreparedPosition, PrepareError> {
+    pub fn prepare(
+        &mut self,
+        position: SuggestedPosition,
+    ) -> Result<PreparedPosition, PrepareError> {
         let rounded_size = self.round_size(position.symbol, position.size);
 
         let price = self
@@ -140,7 +143,7 @@ impl<A: Api> Exchange<A> {
         self.prepared_positions.push(position);
     }
 
-    pub fn exit(&self, position: &OpenPosition) {
+    pub fn exit(&self, position: &OpenedPosition) {
         self.to_close.borrow_mut().insert(position.id());
     }
 
@@ -150,7 +153,7 @@ impl<A: Api> Exchange<A> {
     }
 
     /// Iterate through all open positions and modify them.
-    pub fn open_positions(&self) -> impl Iterator<Item = &OpenPosition> {
+    pub fn open_positions(&self) -> impl Iterator<Item = &OpenedPosition> {
         self.open_positions.iter()
     }
 
@@ -165,7 +168,7 @@ impl<A: Api> Exchange<A> {
     }
 
     pub fn total(&self) -> Decimal {
-        let wallet_total = self.wallet.available(self.api.quote_asset());
+        let wallet_total = self.wallet.total_sum(self.api.quote_asset());
         let positions_total: Decimal = self
             .open_positions
             .iter()
@@ -442,7 +445,7 @@ impl<A: Api> Exchange<A> {
 
     async fn exit_many(&mut self) -> Result<(), ApiError> {
         let mut order_futures = Vec::new();
-        let (to_exit, to_keep): (Vec<OpenPosition>, Vec<OpenPosition>) = self
+        let (to_exit, to_keep): (Vec<OpenedPosition>, Vec<OpenedPosition>) = self
             .open_positions
             .drain(..)
             .partition(|open_position| self.to_close.borrow_mut().remove(&open_position.id()));
@@ -477,7 +480,7 @@ impl<A: Api> Exchange<A> {
     async fn enter_one(
         &self,
         prepared_position: PreparedPosition,
-    ) -> Result<OpenPosition, ApiError> {
+    ) -> Result<OpenedPosition, ApiError> {
         log::trace!("Entering one position");
         let update = self
             .api
@@ -492,7 +495,7 @@ impl<A: Api> Exchange<A> {
             })
             .await?;
 
-        Ok(OpenPosition {
+        Ok(OpenedPosition {
             market: prepared_position.market,
             side: prepared_position.side,
             size: prepared_position.size,
@@ -509,7 +512,7 @@ impl<A: Api> Exchange<A> {
         })
     }
 
-    async fn exit_one(&self, open_position: OpenPosition) -> Result<ClosedPosition, ApiError> {
+    async fn exit_one(&self, open_position: OpenedPosition) -> Result<ClosedPosition, ApiError> {
         let update = self
             .api
             .place_order(Order {
@@ -542,27 +545,34 @@ impl<A: Api> Exchange<A> {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct PositionId(Uuid);
+pub struct PositionId(pub(crate) Uuid);
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Position {
+pub struct SuggestedPosition {
     pub symbol: Symbol,
     pub side: Side,
     /// Position size expressed in the base asset.
     pub size: Decimal,
 }
 
-pub trait PositionData {
+pub trait Position {
     fn symbol(&self) -> Symbol;
     fn id(&self) -> PositionId;
+    fn want_size(&self) -> Decimal;
+    fn want_price(&self) -> Decimal;
+    fn side(&self) -> Side;
+}
+
+pub trait LivePosition: Position {
     fn size(&self) -> Decimal;
+    fn enter_time(&self) -> DateTime<Utc>;
+    fn exit_time(&self) -> DateTime<Utc>;
     fn enter_price(&self) -> Decimal;
     fn exit_price(&self) -> Decimal;
-    fn side(&self) -> Side;
     fn pnl(&self) -> Decimal {
         match self.side() {
-            Side::Buy => self.size() * (self.exit_price() - self.enter_price()),
-            Side::Sell => self.size() * (self.enter_price() - self.exit_price()),
+            Side::Long => self.size() * (self.exit_price() - self.enter_price()),
+            Side::Short => self.size() * (self.enter_price() - self.exit_price()),
         }
     }
 }
@@ -579,7 +589,7 @@ pub struct PreparedPosition {
     id: PositionId,
 }
 
-impl PositionData for PreparedPosition {
+impl Position for PreparedPosition {
     fn symbol(&self) -> Symbol {
         self.market
     }
@@ -592,35 +602,17 @@ impl PositionData for PreparedPosition {
         self.side
     }
 
-    fn size(&self) -> Decimal {
-        self.size
-    }
-
-    fn enter_price(&self) -> Decimal {
-        self.price
-    }
-
-    fn exit_price(&self) -> Decimal {
-        self.price
-    }
-}
-
-impl PreparedPosition {
-    /*
-    /// Returns the estimated execution price including slippage.
-    pub fn estimated_price(&self) -> Decimal {
-        self.estimated_price
-    }
-    */
-
-    /// Returns the actual size after rounding.
-    pub fn rounded_size(&self) -> Decimal {
+    fn want_size(&self) -> Decimal {
         self.rounded_size
+    }
+
+    fn want_price(&self) -> Decimal {
+        self.price
     }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct OpenPosition {
+pub struct OpenedPosition {
     market: Symbol,
     side: Side,
     size: Decimal,
@@ -636,7 +628,7 @@ pub struct OpenPosition {
     current_time: DateTime<Utc>,
 }
 
-impl PositionData for OpenPosition {
+impl Position for OpenedPosition {
     fn symbol(&self) -> Symbol {
         self.market
     }
@@ -649,6 +641,16 @@ impl PositionData for OpenPosition {
         self.side
     }
 
+    fn want_size(&self) -> Decimal {
+        self.rounded_size
+    }
+
+    fn want_price(&self) -> Decimal {
+        self.price
+    }
+}
+
+impl LivePosition for OpenedPosition {
     fn size(&self) -> Decimal {
         self.size
     }
@@ -660,8 +662,15 @@ impl PositionData for OpenPosition {
     fn exit_price(&self) -> Decimal {
         self.current_price
     }
-}
 
+    fn enter_time(&self) -> DateTime<Utc> {
+        self.enter_time
+    }
+
+    fn exit_time(&self) -> DateTime<Utc> {
+        self.current_time
+    }
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ClosedPosition {
     market: Symbol,
@@ -679,7 +688,7 @@ pub struct ClosedPosition {
     id: PositionId,
 }
 
-impl PositionData for ClosedPosition {
+impl Position for ClosedPosition {
     fn symbol(&self) -> Symbol {
         self.market
     }
@@ -692,6 +701,16 @@ impl PositionData for ClosedPosition {
         self.side
     }
 
+    fn want_size(&self) -> Decimal {
+        self.rounded_size
+    }
+
+    fn want_price(&self) -> Decimal {
+        self.price
+    }
+}
+
+impl LivePosition for ClosedPosition {
     fn size(&self) -> Decimal {
         self.size
     }
@@ -703,19 +722,28 @@ impl PositionData for ClosedPosition {
     fn exit_price(&self) -> Decimal {
         self.exit_price
     }
+
+    fn enter_time(&self) -> DateTime<Utc> {
+        self.enter_time
+    }
+
+    fn exit_time(&self) -> DateTime<Utc> {
+        self.exit_time
+    }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(rename_all = "UPPERCASE")]
 pub enum Side {
-    Buy,
-    Sell,
+    Long,
+    Short,
 }
 
 impl Side {
     pub fn other(&self) -> Self {
         match self {
-            Self::Buy => Self::Sell,
-            Self::Sell => Self::Buy,
+            Self::Long => Self::Short,
+            Self::Short => Self::Long,
         }
     }
 }
@@ -726,8 +754,8 @@ impl fmt::Display for Side {
             f,
             "{}",
             match self {
-                Side::Buy => "buy",
-                Side::Sell => "sell",
+                Side::Long => "buy",
+                Side::Short => "sell",
             }
         )
     }

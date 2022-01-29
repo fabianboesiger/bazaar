@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use futures_util::lock::Mutex;
 use rust_decimal::prelude::*;
 
+/// The Simulate API is a middleware that does not actually execute orders,
+/// and instead simulates the orders.
+/// This is useful for backtesting.
 pub struct Simulate<A>
 where
     A: Api,

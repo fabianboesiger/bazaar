@@ -8,6 +8,8 @@ use chrono::{Duration, TimeZone, Utc};
 use rust_decimal::prelude::*;
 use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, SqlitePool};
 
+/// The Store API is a middleware that stores fetched data in a SQLite database.
+/// This is very useful for backtesting, as backtests are usually run many times.
 pub struct Store<A>
 where
     A: Api,
@@ -211,43 +213,6 @@ impl<A: Api> Api for Store<A> {
 
     async fn order_fee(&self) -> Decimal {
         self.api.order_fee().await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::{Duration, TimeZone, Utc};
-
-    use super::Store;
-    use crate::{
-        apis::{ftx::Ftx, Api},
-        Asset, CandleKey, Symbol,
-    };
-
-    #[tokio::test]
-    async fn cache() {
-        simple_logger::SimpleLogger::new()
-            .with_level(log::LevelFilter::Debug)
-            .with_utc_timestamps()
-            .init()
-            .unwrap();
-
-        let cache = Store::new(Ftx::new()).await;
-        let mut time = Utc.ymd(2021, 6, 1).and_hms(0, 0, 0);
-        for _ in 0..10000 {
-            let candle = cache
-                .get_candles(CandleKey {
-                    market: Symbol::Perp(Asset::new("BTC")),
-                    time,
-                    interval: Duration::seconds(15),
-                })
-                .await;
-
-            if candle.unwrap()[0].1.is_none() {
-                panic!("No candle received for time {}.", time);
-            }
-            time = time + Duration::seconds(15);
-        }
     }
 }
 

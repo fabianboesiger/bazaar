@@ -145,8 +145,8 @@ impl Api for Ftx {
             .request(PlaceOrder {
                 market: self.format_market(order.market),
                 side: match order.side {
-                    Side::Buy => ftx::rest::Side::Buy,
-                    Side::Sell => ftx::rest::Side::Sell,
+                    Side::Long => ftx::rest::Side::Buy,
+                    Side::Short => ftx::rest::Side::Sell,
                 },
                 price: match order.order_type {
                     OrderType::Market => None,

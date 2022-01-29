@@ -1,7 +1,7 @@
 use bazaar::{
     apis::{Api, Ftx},
     strategies::{Options, Strategy},
-    AnyError, Bazaar, Exchange, Position, Side, Symbol,
+    AnyError, Bazaar, Exchange, Side, SuggestedPosition, Symbol,
 };
 use chrono::{Duration, TimeZone, Utc};
 use rolling_norm::Series;
@@ -62,10 +62,10 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
             for position in exchange.open_positions() {
                 exchange.exit(position);
             }
-            let position = exchange.prepare(Position {
+            let position = exchange.prepare(SuggestedPosition {
                 symbol: self.symbol,
                 size: dec!(0.01),
-                side: Side::Buy,
+                side: Side::Long,
             })?;
             exchange.enter(position);
         } else if !curr_long_crossover && self.last_long_crossover {
@@ -73,10 +73,10 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
             for position in exchange.open_positions() {
                 exchange.exit(position);
             }
-            let position = exchange.prepare(Position {
+            let position = exchange.prepare(SuggestedPosition {
                 symbol: self.symbol,
                 size: dec!(0.01),
-                side: Side::Sell,
+                side: Side::Short,
             })?;
             exchange.enter(position);
         }

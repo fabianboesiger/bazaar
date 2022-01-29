@@ -2,6 +2,7 @@ use chrono::Duration;
 
 use crate::{apis::Api, AnyError, Exchange};
 
+/// This trait needs to be implemented by your strategy.
 pub trait Strategy<A>
 where
     A: Api,

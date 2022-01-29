@@ -1,3 +1,5 @@
+#[cfg(feature = "binance")]
+mod binance;
 mod forward_fill;
 #[cfg(feature = "ftx")]
 mod ftx;
@@ -5,6 +7,8 @@ mod simulate;
 mod store;
 
 #[cfg(feature = "ftx")]
+pub use self::ftx::*;
+#[cfg(feature = "binance")]
 pub use self::ftx::*;
 use chrono::{DateTime, Utc};
 pub use forward_fill::*;
@@ -42,6 +46,7 @@ pub trait Api: Send + Sync {
     fn quote_asset(&self) -> Asset;
 }
 
+/// Defines an order that can be placed in an exchange.
 #[derive(Debug)]
 pub struct Order {
     pub market: Symbol,

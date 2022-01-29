@@ -8,17 +8,17 @@ rust_decimal = { version = "1.19.0", features = ["serde"] }
 rust_decimal_macros = "1.19.0"
 async-trait = "0.1.52"
 futures-util = "0.3.19"
-sqlx = { version = "0.5.10", features = ["runtime-tokio-rustls", "sqlite"] }
+sqlx = { version = "0.5.10", features = ["runtime-tokio-rustls", "sqlite", "postgres", "uuid", "decimal", "chrono"] }
 chrono = { version = "0.4.19", features = ["serde"] }
 thiserror = "1.0.30"
 log = "0.4.14"
 once_cell = "1.9.0"
-ftx = { path = "../ftx", optional = true }
 tokio = { version = "1.15.0", features = ["time"] }
+uuid = { version = "0.8.2", features = ["serde", "v4"] }
 serde = { version = "1.0.133", features = ["derive"], optional = true }
 serde_json = { version = "1.0.74", optional = true }
-tokio-util = "0.6.9"
-uuid = { version = "0.8.2", features = ["serde", "v4"] }
+ftx = { path = "../ftx", optional = true }
+binance = { git = "https://github.com/wisespace-io/binance-rs.git", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.15.0", features = ["rt"] }
@@ -27,6 +27,6 @@ rust_decimal_macros = "1.19.0"
 rolling_norm = { path = "../rolling-norm" }
 
 [features]
-default = ["exchange-ftx", "monitor"]
-exchange-ftx = ["ftx"]
+default = ["ftx", "binance", "monitor", "backtest"]
 monitor = ["serde", "serde_json"]
+backtest = []

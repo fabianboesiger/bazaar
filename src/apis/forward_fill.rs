@@ -10,6 +10,8 @@ use chrono::{DateTime, Duration, Utc};
 use futures_util::lock::Mutex;
 use rust_decimal::Decimal;
 
+/// The Forward Fill API forward fills unknown candles using the last known candle data.
+/// This is useful in case your strategy does not support undefined candles.
 pub struct ForwardFill<A>
 where
     A: Api,
