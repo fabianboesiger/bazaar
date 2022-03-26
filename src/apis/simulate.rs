@@ -114,3 +114,91 @@ impl<A: Api> Api for Simulate<A> {
         self.api.order_fee().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{apis::{Ftx, OrderType}, Side};
+    use chrono::Utc;
+    use rust_decimal_macros::dec;
+
+    #[tokio::test]
+    async fn deduct_fee_long() {
+        let mut wallet = Wallet::new();
+        wallet.deposit(dec!(1000), Asset::new("USD"));
+        let api = Simulate::new(Ftx::new(), wallet);
+        let order = Order {
+            market: Symbol::perp("BTC"),
+            side: Side::Long,
+            size: dec!(0.01),
+            order_type: OrderType::Market,
+            reduce_only: false,
+            time: Utc::now(),
+            price: dec!(10000)
+        };
+
+        let OrderInfo {
+            size,
+            ..
+        } = api.place_order(order).await.unwrap();
+
+        assert!(size < dec!(0.01));
+
+        let order = Order {
+            market: Symbol::perp("BTC"),
+            side: Side::Short,
+            size,
+            order_type: OrderType::Market,
+            reduce_only: false,
+            time: Utc::now(),
+            price: dec!(10000)
+        };
+
+        let OrderInfo {
+            size,
+            ..
+        } = api.place_order(order).await.unwrap();
+        
+        assert!(size < dec!(0.01));
+    }
+
+    #[tokio::test]
+    async fn deduct_fee_short() {
+        let mut wallet = Wallet::new();
+        wallet.deposit(dec!(1000), Asset::new("USD"));
+        let api = Simulate::new(Ftx::new(), wallet);
+        let order = Order {
+            market: Symbol::perp("BTC"),
+            side: Side::Short,
+            size: dec!(0.01),
+            order_type: OrderType::Market,
+            reduce_only: false,
+            time: Utc::now(),
+            price: dec!(10000)
+        };
+
+        let OrderInfo {
+            size,
+            ..
+        } = api.place_order(order).await.unwrap();
+
+        assert!(size < dec!(0.01));
+
+        let order = Order {
+            market: Symbol::perp("BTC"),
+            side: Side::Long,
+            size,
+            order_type: OrderType::Market,
+            reduce_only: false,
+            time: Utc::now(),
+            price: dec!(10000)
+        };
+
+        let OrderInfo {
+            size,
+            ..
+        } = api.place_order(order).await.unwrap();
+        
+        assert!(size < dec!(0.01));
+    }
+}

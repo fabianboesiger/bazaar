@@ -23,8 +23,12 @@ use rust_decimal::Decimal;
 use strategies::{Monitor, Strategy};
 
 pub struct Bazaar {
+    /// The start capital for simulated backtesting in USD.
     pub start_capital: Decimal,
+    /// The start time for backtesting.
     pub start_time: DateTime<Utc>,
+    /// The maximum forward fill duration for backtesting.
+    pub forward_fill: Duration,
 }
 
 impl Default for Bazaar {
@@ -32,6 +36,7 @@ impl Default for Bazaar {
         Bazaar {
             start_capital: dec!(1000),
             start_time: Utc.ymd(2021, 1, 1).and_hms(0, 0, 0),
+            forward_fill: Duration::days(1),
         }
     }
 }
@@ -55,6 +60,8 @@ impl Bazaar {
     }
 
     /// Runs your strategy in backtest mode.
+    /// Exchange data is stored locally to speed up backtesting.
+    /// Missing candles are forward filled.
     #[cfg(feature = "backtest")]
     pub async fn run<A: Api, B: Api, S: Strategy<B>>(
         self,
@@ -69,7 +76,7 @@ impl Bazaar {
 
         let strategy = Monitor::new(strategy);
         let api = Simulate::new(
-            ForwardFill::new(Store::new(api).await, Duration::hours(24)),
+            ForwardFill::new(Store::new(api).await, self.forward_fill),
             wallet,
         );
         let exchange = Exchange::new(api, self.start_time);

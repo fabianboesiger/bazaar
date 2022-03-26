@@ -1,6 +1,6 @@
 use bazaar::{
     apis::{Api, Ftx},
-    strategies::{Options, Strategy},
+    strategies::{Settings, Strategy},
     AnyError, Bazaar, Exchange, Side, SuggestedPosition, Symbol,
 };
 use chrono::{Duration, TimeZone, Utc};
@@ -34,10 +34,11 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
     const NAME: &'static str = "MA Crossover Strategy";
 
     // Inititalize the strategy.
-    fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Options, AnyError> {
+    fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Settings, AnyError> {
         // Begin watching the BTC-PERP ticker as we want to trade it.
         exchange.watch(self.symbol);
-        Ok(Options {
+
+        Ok(Settings {
             // We trade on the one minute interval.
             interval: Duration::minutes(1),
             ..Default::default()
@@ -52,6 +53,7 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
             .close
             .to_f32()
             .unwrap();
+            
         self.fast.insert(price);
         self.slow.insert(price);
 

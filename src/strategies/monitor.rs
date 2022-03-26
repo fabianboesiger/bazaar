@@ -12,7 +12,7 @@ use std::{collections::HashSet, marker::PhantomData};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use uuid::Uuid;
 
-use super::{Options, Strategy};
+use super::{Settings, Strategy};
 
 pub struct Monitor<A: Api, S: Strategy<A>> {
     strategy: S,
@@ -64,7 +64,7 @@ impl<A: Api, S: Strategy<A>> Monitor<A, S> {
 impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
     const NAME: &'static str = S::NAME;
 
-    fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Options, AnyError> {
+    fn init(&mut self, exchange: &mut Exchange<A>) -> Result<Settings, AnyError> {
         let result = self.strategy.init(exchange);
 
         if let Ok(_options) = &result {
@@ -98,7 +98,7 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
                 .ok();
         }
 
-        if exchange.real_time() || exchange.current_time().minute() == 0 {
+        if exchange.is_real_time() || exchange.current_time().minute() == 0 {
             self.tx
                 .send(
                     Equity {
@@ -111,7 +111,7 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Monitor<A, S> {
         }
 
         for open_position in exchange.open_positions() {
-            if exchange.real_time() || !self.sent_open_positions.contains(&open_position.id()) {
+            if exchange.is_real_time() || !self.sent_open_positions.contains(&open_position.id()) {
                 self.tx.send(open_position.boxed()).ok();
                 self.sent_open_positions.insert(open_position.id());
             }

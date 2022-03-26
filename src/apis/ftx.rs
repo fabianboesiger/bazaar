@@ -61,17 +61,19 @@ impl Api for Ftx {
         &self,
         key: CandleKey,
     ) -> Result<Vec<(CandleKey, Option<Candle>)>, ApiError> {
+        let req = GetHistoricalPrices {
+            market_name: self.format_market(key.market),
+            resolution: key.interval.num_seconds() as u32,
+            limit: Some(5000),
+            start_time: Some(key.time),
+            end_time: Some(key.time + key.interval * 5000),
+        };
+
         let candles: Vec<(CandleKey, Candle)> = self
             .rest
-            .request(GetHistoricalPrices {
-                market_name: self.format_market(key.market),
-                resolution: key.interval.num_seconds() as u32,
-                limit: Some(5000),
-                start_time: Some(key.time),
-                end_time: Some(key.time + key.interval * 5000),
-            })
+            .request(req.clone())
             .await
-            .unwrap()
+            .expect(&format!("Request failed for: {:?}", req))
             .into_iter()
             .map(|candle| {
                 (

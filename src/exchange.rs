@@ -7,7 +7,7 @@ use std::{
 use super::Wallet;
 use crate::{
     apis::{Api, ApiError, Order, OrderType},
-    strategies::{OnError, Options, Strategy},
+    strategies::{OnError, Settings, Strategy},
     Candle, CandleKey, MarketInfo, Markets, Symbol,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -31,7 +31,7 @@ pub enum PrepareError {
 /// This struct keeps track of the state of the exchange, your positions, your wallet etc.
 pub struct Exchange<A: Api> {
     wallet: Wallet,
-    prepared_positions: Vec<PreparedPosition>,
+    prepared_transactions: Option<PreparedTransaction>,
     open_positions: Vec<OpenedPosition>,
     closed_positions: Vec<ClosedPosition>,
     to_close: RefCell<HashSet<PositionId>>,
@@ -48,7 +48,7 @@ impl<A: Api> Exchange<A> {
         Exchange {
             current_time: start_time,
             wallet: Wallet::new(),
-            prepared_positions: Vec::new(),
+            prepared_transactions: None,
             open_positions: Vec::new(),
             closed_positions: Vec::new(),
             to_close: RefCell::new(HashSet::new()),
@@ -63,7 +63,7 @@ impl<A: Api> Exchange<A> {
         self.current_time
     }
 
-    pub fn real_time(&self) -> bool {
+    pub fn is_real_time(&self) -> bool {
         self.real_time
     }
 
@@ -93,7 +93,8 @@ impl<A: Api> Exchange<A> {
         self.candles.remove(&market);
     }
 
-    pub fn prepare(
+    /*
+    fn prepare(
         &mut self,
         position: SuggestedPosition,
     ) -> Result<PreparedPosition, PrepareError> {
@@ -139,18 +140,19 @@ impl<A: Api> Exchange<A> {
         })
     }
 
-    pub fn enter(&mut self, position: PreparedPosition) {
+    fn enter(&mut self, position: PreparedPosition) {
         self.prepared_positions.push(position);
     }
 
-    pub fn exit(&self, position: &OpenedPosition) {
+    fn exit(&self, position: &OpenedPosition) {
         self.to_close.borrow_mut().insert(position.id());
     }
 
     /// Iterate through all prepared positions and modify them.
-    pub fn prepared_positions(&self) -> impl Iterator<Item = &PreparedPosition> {
+    fn prepared_positions(&self) -> impl Iterator<Item = &PreparedPosition> {
         self.prepared_positions.iter()
     }
+    */
 
     /// Iterate through all open positions and modify them.
     pub fn open_positions(&self) -> impl Iterator<Item = &OpenedPosition> {
@@ -198,7 +200,7 @@ impl<A: Api> Exchange<A> {
     }
 
     // Run the strategy until a non-recoverable error occurs.
-    async fn run_internal<S>(&mut self, strategy: &mut S, options: &Options) -> Result<(), AnyError>
+    async fn run_internal<S>(&mut self, strategy: &mut S, options: &Settings) -> Result<(), AnyError>
     where
         S: Strategy<A>,
     {
@@ -310,10 +312,13 @@ impl<A: Api> Exchange<A> {
                     self.total()
                 );
                 strategy.eval(self)?;
+                /*
                 log::trace!("Exiting positions.");
                 self.exit_many().await?;
                 log::trace!("Entering positions.");
                 self.enter_many().await?;
+                */
+                self.execute().await?;
                 self.step(options);
             } else {
                 /*
@@ -329,7 +334,7 @@ impl<A: Api> Exchange<A> {
         }
     }
 
-    fn step(&mut self, options: &Options) {
+    fn step(&mut self, options: &Settings) {
         log::trace!("Advancing time!");
         self.current_time = self.current_time + options.interval;
         for candles in self.candles.values_mut() {
@@ -370,17 +375,23 @@ impl<A: Api> Exchange<A> {
                             return Err(err);
                         }
                         OnError::ExitAllPositionsAndReturn => {
-                            for position in self.open_positions.iter() {
-                                self.exit(position);
-                            }
-                            self.exit_many().await?;
+                            let mut transaction = SuggestedTransaction::new();
+                            transaction.close_all(&mut self);
+                            transaction
+                                .prepare(&mut self)?
+                                .issue(&mut self);
+                            self.execute().await?;
+
                             return Err(err);
                         }
                         OnError::ExitAllPositionsAndResume => {
-                            for position in self.open_positions.iter() {
-                                self.exit(position);
-                            }
-                            self.exit_many().await?;
+                            let mut transaction = SuggestedTransaction::new();
+                            transaction.close_all(&mut self);
+                            transaction
+                                .prepare(&mut self)?
+                                .issue(&mut self);
+                            self.execute().await?;
+
                             // Go to next step and try again.
                             self.step(&options);
                         }
@@ -390,6 +401,11 @@ impl<A: Api> Exchange<A> {
         }
     }
 
+    async fn execute(&mut self) -> Result<(), ApiError> {
+
+    }
+
+    /*
     async fn enter_many(&mut self) -> Result<(), ApiError> {
         let mut order_futures = Vec::new();
         let to_enter: Vec<PreparedPosition> = self.prepared_positions.drain(..).collect();
@@ -542,12 +558,13 @@ impl<A: Api> Exchange<A> {
             id: open_position.id,
         })
     }
+    */
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PositionId(pub(crate) Uuid);
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct SuggestedPosition {
     pub symbol: Symbol,
     pub side: Side,
@@ -569,15 +586,24 @@ pub trait LivePosition: Position {
     fn exit_time(&self) -> DateTime<Utc>;
     fn enter_price(&self) -> Decimal;
     fn exit_price(&self) -> Decimal;
+
     fn pnl(&self) -> Decimal {
         match self.side() {
             Side::Long => self.size() * (self.exit_price() - self.enter_price()),
             Side::Short => self.size() * (self.enter_price() - self.exit_price()),
         }
     }
+
+    fn quote_enter_size(&self) -> Decimal {
+        self.size() * self.enter_price()
+    }
+
+    fn quote_exit_size(&self) -> Decimal {
+        self.size() * self.exit_price()
+    }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 pub struct PreparedPosition {
     market: Symbol,
     side: Side,
@@ -611,7 +637,7 @@ impl Position for PreparedPosition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct OpenedPosition {
     market: Symbol,
     side: Side,
@@ -671,7 +697,7 @@ impl LivePosition for OpenedPosition {
         self.current_time
     }
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct ClosedPosition {
     market: Symbol,
     side: Side,
@@ -732,7 +758,7 @@ impl LivePosition for ClosedPosition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
 #[sqlx(rename_all = "UPPERCASE")]
 pub enum Side {
     Long,
@@ -758,5 +784,148 @@ impl fmt::Display for Side {
                 Side::Short => "sell",
             }
         )
+    }
+}
+
+pub struct PositionData<P> {
+    position: P,
+    is_open: bool,
+}
+
+pub struct SuggestedTransaction {
+    opens: Vec<SuggestedPosition>,
+    closes: Vec<SuggestedPosition>
+}
+
+impl SuggestedTransaction {
+    pub fn new() -> SuggestedTransaction {
+        SuggestedTransaction { opens: Vec::new(), closes: Vec::new() }
+    }
+
+    pub fn open(&mut self, position: SuggestedPosition) {
+        self.opens.push(position);
+    }
+
+    pub fn close(&mut self, position: &OpenedPosition) {
+        self.closes.push(SuggestedPosition {
+            symbol: position.symbol(),
+            side: position.side().other(),
+            size: position.size(),
+        });
+    }
+
+    pub fn close_all<A: Api>(&mut self, exchange: &Exchange<A>) {
+        for open_position in exchange.open_positions() {
+            self.close(open_position);
+        }
+    }
+
+    pub fn coalesce(self) -> SuggestedTransaction {
+        let positions: Vec<(SuggestedPosition, bool)> = self.closes
+            .into_iter()
+            .map(|p| (p, false))
+            .chain(
+                self.closes
+                    .into_iter()
+                    .map(|p| (p, true))
+            )
+            .collect();
+
+        let symbols: HashSet<Symbol> = positions.iter().map(|(p, _)| p.symbol).collect();
+
+        let opens = Vec::new();
+        let closes = Vec::new();
+
+        for symbol in symbols {
+            let mut size = Decimal::ZERO;
+            for (position, is_open) in positions.into_iter().filter(|(p, _)| p.symbol == symbol) {
+                if position.side == Side::Long {
+                    size += position.size;
+                } else {
+                    size -= position.size;
+                }
+            }
+            if size.abs() > Decimal::ZERO {
+                opens.push(SuggestedPosition {
+                    side: if size > Decimal::ZERO { Side::Long } else { Side::Short },
+                    size: size.abs(),
+                    symbol,
+                });
+            }
+        }
+
+        SuggestedTransaction {
+            opens,
+            closes
+        }
+    }
+
+    pub fn prepare<A: Api>(self, exchange: &mut Exchange<A>) -> Result<PreparedTransaction, PrepareError> {
+        let wallet = exchange.wallet.clone();
+
+        let mut suggested_positions = self.closes;
+        suggested_positions.append(&mut self.opens);
+
+        let prepare = |suggested_position: SuggestedPosition| {
+            let rounded_size = exchange.round_size(suggested_position.symbol, suggested_position.size);
+
+            let price = exchange
+                .candles
+                .get(&suggested_position.symbol)
+                .ok_or(PrepareError::MarketClosed)?
+                .front()
+                .ok_or(PrepareError::MarketClosed)?
+                .1
+                .map(|candle| candle.close)
+                .ok_or(PrepareError::MarketClosed)?;
+            let quote_size = rounded_size * price;
+            /*
+            let estimated_price = self
+                .markets
+                .market(position.market)
+                .unwrap()
+                .orderbook()
+                .execution_price(position.size, position.side)
+                .unwrap();
+            */
+    
+            match suggested_position.symbol {
+                Symbol::Perp(_) => {
+                    wallet
+                        .reserve(quote_size, exchange.api.quote_asset())
+                        .map_err(|_| PrepareError::InsufficientAssets)?;
+                }
+            }
+
+            Ok::<PreparedPosition, PrepareError>(PreparedPosition {
+                market: suggested_position.symbol,
+                side: suggested_position.side,
+                size: suggested_position.size,
+                //estimated_price,
+                rounded_size,
+                price,
+                time: exchange.current_time,
+                id: PositionId(Uuid::new_v4()),
+            })
+        };
+
+        // On success, set reserved amounts accordingly.
+        exchange.wallet = wallet;
+        
+        Ok(PreparedTransaction {
+            opens: self.opens.into_iter().map(prepare).collect::<Result<Vec<PreparedPosition>, PrepareError>>()?,
+            closes: self.closes.into_iter().map(prepare).collect::<Result<Vec<PreparedPosition>, PrepareError>>()?,
+        })
+    }
+}
+
+pub struct PreparedTransaction {
+    opens: Vec<PreparedPosition>,
+    closes: Vec<PreparedPosition>
+}
+
+impl PreparedTransaction {
+    pub fn issue<A: Api>(self, exchange: &mut Exchange<A>) {
+        exchange.prepared_transactions = Some(self);
     }
 }

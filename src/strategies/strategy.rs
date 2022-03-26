@@ -9,21 +9,21 @@ where
 {
     const NAME: &'static str;
     /// This method is called once at the start of the strategy.
-    fn init(&mut self, manager: &mut Exchange<A>) -> Result<Options, AnyError>;
+    fn init(&mut self, manager: &mut Exchange<A>) -> Result<Settings, AnyError>;
     /// This method is called after each interval.
     fn eval(&mut self, manager: &mut Exchange<A>) -> Result<(), AnyError>;
 }
 
-pub struct Options {
+pub struct Settings {
     /// Specifies the interval on which to trade on.
     pub interval: Duration,
     /// Specifies how errors caused by the strategy should be handled,
     pub on_error: OnError,
 }
 
-impl Default for Options {
+impl Default for Settings {
     fn default() -> Self {
-        Options {
+        Settings {
             interval: Duration::minutes(1),
             on_error: OnError::ExitAllPositionsAndReturn,
         }
