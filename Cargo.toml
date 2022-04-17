@@ -24,7 +24,7 @@ ftx = { version = "0.5.0", optional = true }
 tokio = { version = "1.15.0", features = ["rt"] }
 simple_logger = "2.0"
 rust_decimal_macros = "1.19"
-rolling_norm = { path = "../rolling-norm" }
+rolling_norm = { version = "0.3.0" }
 
 [features]
 default = ["ftx", "monitor", "backtest"]
