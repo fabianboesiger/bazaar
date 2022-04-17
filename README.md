@@ -1,6 +1,8 @@
 # Bazaar
 
-Bazaar is a Rust crate that provides an easy interface for algorithmic trading.
+_Work in progress._
+
+Bazaar is a Rust crate for algorithmic futures trading.
 
 ## Features
 
@@ -12,8 +14,3 @@ Bazaar is a Rust crate that provides an easy interface for algorithmic trading.
 ## Implemented Exchanges
 
 - [FTX](https://ftx.com/)
-
-## An Example
-
-```rust
-```
