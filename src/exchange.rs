@@ -1,23 +1,18 @@
-use std::fmt;
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet, VecDeque},
-};
+use std::collections::{HashMap, VecDeque};
 
 use super::Wallet;
 use crate::{
-    apis::{Api, ApiError, Order, OrderType},
+    apis::{Api, ApiError},
     strategies::{OnError, Settings, Strategy},
-    Candle, CandleKey, MarketInfo, Markets, Symbol,
+    Candle, CandleKey, MarketInfo, Markets, Order, OrderType, Symbol,
 };
+use crate::{OrderInfo, Side, WalletError};
 use chrono::{DateTime, Duration, Utc};
 use futures_util::{future::join_all, try_join};
 use rust_decimal::prelude::*;
 use uuid::Uuid;
 
 pub type AnyError = Box<dyn std::error::Error>;
-
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -30,16 +25,17 @@ pub enum PrepareError {
 
 /// This struct keeps track of the state of the exchange, your positions, your wallet etc.
 pub struct Exchange<A: Api> {
+    api: A,
+    // Keeps track of the wallet.
     wallet: Wallet,
-    prepared_transactions: Option<PreparedTransaction>,
-    open_positions: Vec<OpenedPosition>,
-    closed_positions: Vec<ClosedPosition>,
-    to_close: RefCell<HashSet<PositionId>>,
+    // Current candles of all subscribed tickers.
+    // TODO: Add this to markets?
     candles: HashMap<Symbol, VecDeque<(CandleKey, Option<Candle>)>>,
     markets: Markets,
     current_time: DateTime<Utc>,
     real_time: bool,
-    api: A,
+    open_positions_prev: Vec<Position>,
+    open_positions: Vec<Position>,
 }
 
 impl<A: Api> Exchange<A> {
@@ -48,14 +44,14 @@ impl<A: Api> Exchange<A> {
         Exchange {
             current_time: start_time,
             wallet: Wallet::new(),
-            prepared_transactions: None,
-            open_positions: Vec::new(),
-            closed_positions: Vec::new(),
-            to_close: RefCell::new(HashSet::new()),
+            //open_positions: Vec::new(),
+            //closed_positions: Vec::new(),
             candles: HashMap::new(),
             markets: Markets::new(),
             api,
             real_time: false,
+            open_positions_prev: Vec::new(),
+            open_positions: Vec::new(),
         }
     }
 
@@ -83,6 +79,10 @@ impl<A: Api> Exchange<A> {
         front.1.as_ref()
     }
 
+    // Fetch the current price for a market.
+    pub fn price(&self, market: Symbol) -> Option<Decimal> {
+        self.candle(market).map(|candle| candle.close)
+    }
     /// Begin watching a market.
     pub fn watch(&mut self, market: Symbol) {
         self.candles.insert(market, VecDeque::new());
@@ -93,75 +93,52 @@ impl<A: Api> Exchange<A> {
         self.candles.remove(&market);
     }
 
+    /// Enter a new position.
+    pub fn open(&mut self, position: Position) -> Result<&Position, WalletError> {
+        let rounded_position = Position {
+            position_id: position.position_id,
+            sizes: position
+                .sizes
+                .into_iter()
+                .map(|(symbol, (size, entry_price))| {
+                    (symbol, (self.round_size(symbol, size), entry_price))
+                })
+                .collect(),
+        };
+
+        self.open_positions.push(rounded_position);
+
+        Ok(self.open_positions.last().unwrap())
+    }
+
     /*
-    fn prepare(
-        &mut self,
-        position: SuggestedPosition,
-    ) -> Result<PreparedPosition, PrepareError> {
-        let rounded_size = self.round_size(position.symbol, position.size);
-
-        let price = self
-            .candles
-            .get(&position.symbol)
-            .ok_or(PrepareError::MarketClosed)?
-            .front()
-            .ok_or(PrepareError::MarketClosed)?
-            .1
-            .map(|candle| candle.close)
-            .ok_or(PrepareError::MarketClosed)?;
-        let quote_size = rounded_size * price;
-        /*
-        let estimated_price = self
-            .markets
-            .market(position.market)
-            .unwrap()
-            .orderbook()
-            .execution_price(position.size, position.side)
-            .unwrap();
-        */
-
-        match position.symbol {
-            Symbol::Perp(_) => {
-                self.wallet
-                    .reserve(quote_size, self.api.quote_asset())
-                    .map_err(|_| PrepareError::InsufficientAssets)?;
-            }
+    pub fn close(&mut self, position: &Position) {
+        let mut quote_size = Decimal::ZERO;
+        for (symbol, size) in &position.sizes {
+            quote_size += size.abs() * self.candle(*symbol).unwrap().close;
         }
+        self.checker_wallet
+            .deposit(quote_size, self.api.quote_asset());
 
-        Ok(PreparedPosition {
-            market: position.symbol,
-            side: position.side,
-            size: position.size,
-            //estimated_price,
-            rounded_size,
-            price,
-            time: self.current_time,
-            id: PositionId(Uuid::new_v4()),
-        })
+        position.close();
     }
 
-    fn enter(&mut self, position: PreparedPosition) {
-        self.prepared_positions.push(position);
-    }
-
-    fn exit(&self, position: &OpenedPosition) {
-        self.to_close.borrow_mut().insert(position.id());
-    }
-
-    /// Iterate through all prepared positions and modify them.
-    fn prepared_positions(&self) -> impl Iterator<Item = &PreparedPosition> {
-        self.prepared_positions.iter()
+    pub fn close_all(&mut self) {
+        for position in &self.open_positions {
+            self.close(position);
+        }
     }
     */
 
-    /// Iterate through all open positions and modify them.
-    pub fn open_positions(&self) -> impl Iterator<Item = &OpenedPosition> {
-        self.open_positions.iter()
+    /// Mutate your already open positions.
+    pub fn positions(&mut self) -> impl Iterator<Item = &mut Position> {
+        self.open_positions.iter_mut()
     }
 
-    /// Iterate through all closed positions and modify them.
-    pub fn closed_positions(&self) -> impl Iterator<Item = &ClosedPosition> {
-        self.closed_positions.iter()
+    pub fn close_all(&mut self) {
+        for position in self.positions() {
+            position.close();
+        }
     }
 
     /// Get wallet.
@@ -170,12 +147,13 @@ impl<A: Api> Exchange<A> {
     }
 
     pub fn total(&self) -> Decimal {
-        let wallet_total = self.wallet.total_sum(self.api.quote_asset());
+        let wallet_total = self.wallet.total(self.api.quote_asset());
         let positions_total: Decimal = self
             .open_positions
             .iter()
-            .map(|position| position.enter_size * position.enter_price + position.pnl())
+            .map(|position| position.total_value(&self))
             .sum();
+
         wallet_total + positions_total
     }
 
@@ -200,117 +178,22 @@ impl<A: Api> Exchange<A> {
     }
 
     // Run the strategy until a non-recoverable error occurs.
-    async fn run_internal<S>(&mut self, strategy: &mut S, options: &Settings) -> Result<(), AnyError>
+    async fn run_internal<S>(
+        &mut self,
+        strategy: &mut S,
+        settings: &Settings,
+    ) -> Result<(), AnyError>
     where
         S: Strategy<A>,
     {
         loop {
             // Duration to wait until next candle is available,
             // if less than zero, the candle should be available.
-            let mut wait_duration = self.current_time + options.interval - Utc::now();
+            let mut wait_duration = self.current_time + settings.interval - Utc::now();
             if wait_duration <= Duration::zero() {
                 // Update wallet and market info.
-                try_join!(
-                    async {
-                        log::trace!("Update markets.");
-                        self.api.update_markets(&mut self.markets).await?;
-                        Ok::<(), AnyError>(())
-                    },
-                    async {
-                        log::trace!("Update markets.");
-                        self.api.update_wallet(&mut self.wallet).await?;
-                        Ok::<(), AnyError>(())
-                    },
-                    async {
-                        log::trace!("Update candles.");
-                        let mut candles_missing: Vec<Symbol> = self
-                            .candles
-                            .iter()
-                            .filter(|(_asset, candles)| {
-                                candles.is_empty() || candles.front().is_none()
-                            })
-                            .map(|(asset, _)| *asset)
-                            .collect();
+                self.update(settings, &mut wait_duration).await?;
 
-                        // While the next candle is not already available
-                        // and we don't have all candles, fetch candles.
-                        while !candles_missing.is_empty() {
-                            log::trace!("Some candles are missing, fetching them.");
-                            // Fetch all candles concurrently.
-                            let mut futures = Vec::new();
-                            for &market in candles_missing.iter() {
-                                futures.push(self.api.get_candles(CandleKey {
-                                    market,
-                                    time: self.current_time,
-                                    interval: options.interval,
-                                }));
-                            }
-                            let candles = join_all(futures).await;
-                            for (asset, new_candles) in candles_missing.iter().zip(candles) {
-                                if let Some(candles) = self.candles.get_mut(asset) {
-                                    candles
-                                        .append(&mut VecDeque::from_iter(new_candles?.into_iter()));
-                                }
-                            }
-
-                            // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.drain_filter.
-                            let mut i = 0;
-                            while i < candles_missing.len() {
-                                // Remove present candles from missing list.
-                                if self.candles.contains_key(&candles_missing[i])
-                                    && self
-                                        .candles
-                                        .get(&candles_missing[i])
-                                        .unwrap()
-                                        .front()
-                                        .is_some()
-                                {
-                                    candles_missing.remove(i);
-                                } else {
-                                    i += 1;
-                                }
-                            }
-
-                            if wait_duration <= -options.interval {
-                                log::trace!("Stop waiting for new candles.");
-                                break;
-                            } else if !candles_missing.is_empty() {
-                                log::trace!("Waiting for new candles.");
-                                // There still are some candles that could not be fetched.
-                                // Wait a bit and try again.
-                                tokio::time::sleep(
-                                    Duration::seconds(3).to_std().expect("Converting to std"),
-                                )
-                                .await;
-                                wait_duration = self.current_time + options.interval - Utc::now();
-                            }
-                        }
-
-                        Ok::<(), AnyError>(())
-                    }
-                )?;
-
-                for open_position in &mut self.open_positions {
-                    open_position.current_time = self.current_time;
-                    open_position.current_price = self
-                        .candles
-                        .get(&open_position.market)
-                        .unwrap()
-                        .front()
-                        .unwrap()
-                        .1
-                        .unwrap()
-                        .close;
-                }
-
-                // Evaluate strategy and handle errors.
-                log::info!(
-                    "Running strategy for time {}, open: {}, closed: {}, total: {}.",
-                    self.current_time,
-                    self.open_positions.len(),
-                    self.closed_positions.len(),
-                    self.total()
-                );
                 strategy.eval(self)?;
                 /*
                 log::trace!("Exiting positions.");
@@ -319,7 +202,16 @@ impl<A: Api> Exchange<A> {
                 self.enter_many().await?;
                 */
                 self.execute().await?;
-                self.step(options);
+
+                // Evaluate strategy and handle errors.
+                log::info!(
+                    "Ran strategy for time {}, new total value: {}",
+                    self.current_time,
+                    self.total()
+                );
+
+                self.api.status(self.current_time, self.total());
+                self.step(settings);
             } else {
                 /*
                 for (_, candles) in &self.candles {
@@ -334,12 +226,97 @@ impl<A: Api> Exchange<A> {
         }
     }
 
-    fn step(&mut self, options: &Settings) {
+    fn step(&mut self, settings: &Settings) {
         log::trace!("Advancing time!");
-        self.current_time = self.current_time + options.interval;
+        self.current_time = self.current_time + settings.interval;
         for candles in self.candles.values_mut() {
             candles.pop_front();
         }
+    }
+
+    async fn update(
+        &mut self,
+        settings: &Settings,
+        wait_duration: &mut Duration,
+    ) -> Result<(), AnyError> {
+        try_join!(
+            async {
+                log::trace!("Update markets.");
+                self.api.update_markets(&mut self.markets).await?;
+                Ok::<(), AnyError>(())
+            },
+            async {
+                log::trace!("Update markets.");
+                self.api.update_wallet(&mut self.wallet).await?;
+                Ok::<(), AnyError>(())
+            },
+            async {
+                log::trace!("Update candles.");
+                let mut candles_missing: Vec<Symbol> = self
+                    .candles
+                    .iter()
+                    .filter(|(_asset, candles)| candles.is_empty() || candles.front().is_none())
+                    .map(|(asset, _)| *asset)
+                    .collect();
+
+                // While the next candle is not already available
+                // and we don't have all candles, fetch candles.
+                while !candles_missing.is_empty() {
+                    log::trace!("Some candles are missing, fetching them.");
+                    // Fetch all candles concurrently.
+                    let mut futures = Vec::new();
+                    for &market in candles_missing.iter() {
+                        futures.push(self.api.get_candles(CandleKey {
+                            market,
+                            time: self.current_time,
+                            interval: settings.interval,
+                        }));
+                    }
+                    let candles = join_all(futures).await;
+                    for (asset, new_candles) in candles_missing.iter().zip(candles) {
+                        if let Some(candles) = self.candles.get_mut(asset) {
+                            candles.append(&mut VecDeque::from_iter(new_candles?.into_iter()));
+                        }
+                    }
+
+                    // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.drain_filter.
+                    let mut i = 0;
+                    while i < candles_missing.len() {
+                        // Remove present candles from missing list.
+                        if self.candles.contains_key(&candles_missing[i])
+                            && self
+                                .candles
+                                .get(&candles_missing[i])
+                                .unwrap()
+                                .front()
+                                .is_some()
+                        {
+                            candles_missing.remove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+
+                    if *wait_duration <= -settings.interval {
+                        log::trace!("Stop waiting for new candles.");
+                        break;
+                    } else if !candles_missing.is_empty() {
+                        log::trace!("Waiting for new candles.");
+                        // There still are some candles that could not be fetched.
+                        // Wait a bit and try again.
+                        tokio::time::sleep(
+                            Duration::seconds(3).to_std().expect("Converting to std"),
+                        )
+                        .await;
+                        *wait_duration = self.current_time + settings.interval - Utc::now();
+                    }
+                }
+
+                Ok::<(), AnyError>(())
+            }
+        )?;
+
+        Ok(())
     }
 
     /// Start running a strategy on an exchange.
@@ -347,6 +324,8 @@ impl<A: Api> Exchange<A> {
     where
         S: Strategy<A>,
     {
+        self.api.hello(S::NAME);
+
         try_join!(
             async {
                 log::trace!("Update markets.");
@@ -375,21 +354,13 @@ impl<A: Api> Exchange<A> {
                             return Err(err);
                         }
                         OnError::ExitAllPositionsAndReturn => {
-                            let mut transaction = SuggestedTransaction::new();
-                            transaction.close_all(&mut self);
-                            transaction
-                                .prepare(&mut self)?
-                                .issue(&mut self);
+                            self.close_all();
                             self.execute().await?;
 
                             return Err(err);
                         }
                         OnError::ExitAllPositionsAndResume => {
-                            let mut transaction = SuggestedTransaction::new();
-                            transaction.close_all(&mut self);
-                            transaction
-                                .prepare(&mut self)?
-                                .issue(&mut self);
+                            self.close_all();
                             self.execute().await?;
 
                             // Go to next step and try again.
@@ -402,530 +373,368 @@ impl<A: Api> Exchange<A> {
     }
 
     async fn execute(&mut self) -> Result<(), ApiError> {
+        /*
+        self.exit_many().await?;
+        self.enter_many().await?;
+        */
 
+        // Compute diff between current wanted positions and previous positions.
+        let mut curr: HashMap<Symbol, Decimal> = HashMap::new();
+        let mut next: HashMap<Symbol, Decimal> = HashMap::new();
+        let mut diff: HashMap<Symbol, Decimal> = HashMap::new();
+        for position in &self.open_positions {
+            for (symbol, (size, _)) in &position.sizes {
+                *diff.entry(*symbol).or_default() += size;
+                *next.entry(*symbol).or_default() += size;
+            }
+        }
+        for position in &self.open_positions_prev {
+            for (symbol, (size, _)) in &position.sizes {
+                *diff.entry(*symbol).or_default() -= size;
+                *curr.entry(*symbol).or_default() += size;
+            }
+        }
+
+        // Compute orders from diff.
+        let mut orders = Vec::new();
+        for (&symbol, &size) in &diff {
+            if size != Decimal::ZERO {
+                //log::error!("diff: {}, {}", symbol, size);
+
+                // 0 <= curr <= next ==> qty = next - curr
+                // next <= curr <= 0 ==> qty = (-next) - (-curr)
+                // curr <= 0 <= next & -curr <= next ==> next - (-curr)
+                // curr <= 0 <= next & next <= -curr ==> next - (-curr)
+
+                orders.push(Order {
+                    order_id: Uuid::new_v4(),
+                    market: symbol,
+                    side: if size > Decimal::ZERO {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    },
+                    size: size.abs(),
+                    order_type: OrderType::Market,
+                    reduce_only: next.get(&symbol).cloned().unwrap_or_default().is_zero(),
+                    time: self.current_time,
+                    current_price: self.price(symbol).unwrap(),
+                })
+            }
+        }
+
+        // Execute orders, first orders that decrease position sizes, then orders that increase position sizes.
+        let (decrease_position_orders, increase_position_orders) =
+            orders.into_iter().partition(|order| {
+                next.get(&order.market).cloned().unwrap_or_default().abs()
+                    < curr.get(&order.market).cloned().unwrap_or_default().abs()
+            });
+
+        let mut order_infos = Vec::new();
+        order_infos.append(&mut self.order(decrease_position_orders).await?);
+        order_infos.append(&mut self.order(increase_position_orders).await?);
+
+        let mut modified_open_positions = self.open_positions.clone();
+
+        // Update actual positions based on order infos.
+        for order_info in order_infos {
+            let want = diff
+                .get(&order_info.market)
+                .cloned()
+                .unwrap_or_default()
+                .abs();
+            let got = order_info.size;
+
+            // Iterate all relevant position sizes and their previous size.
+            /*
+            for (value, (size, entry_price), (size_prev, entry_price_prev)) in self.open_positions.iter_mut().filter_map(|position| {
+                let market = order_info.market;
+                let size = position.sizes.get_mut(&market)?;
+
+                let size_prev = self
+                    .open_positions_prev
+                    .iter()
+                    .find(|position_prev| position_prev.position_id == position.position_id)
+                    .map(|position_prev| {
+                        position_prev
+                            .sizes
+                            .get(&market)
+                            .cloned()
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+
+                Some((position.value(&self, order_info.market), size, size_prev))
+            }) {
+            */
+
+            for position in &mut modified_open_positions {
+                if let Some((size, entry_price)) = position.sizes.get_mut(&order_info.market) {
+                    let default = Position::new();
+                    let position_prev = self
+                        .open_positions_prev
+                        .iter()
+                        .find(|position_prev| position_prev.position_id == position.position_id)
+                        .unwrap_or(&default);
+                    let (size_prev, entry_price_prev) = position_prev
+                        .sizes
+                        .get(&order_info.market)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // position_prev + diff * 1 = position
+                    // position_prev + diff * (got / want) = position_corrected
+                    // position_prev + (position - position_prev) * (got / want) = position_corrected
+
+                    // Adapt position size.
+
+                    let diff = *size - size_prev;
+                    if diff != Decimal::ZERO {
+                        let diff_actual = diff * got / want;
+                        *size = size_prev + diff_actual;
+                    }
+
+                    let diff = size.abs() - size_prev.abs(); // positive -> position increase, negative -> position decrease
+
+                    // Compute updated entry price.
+                    if size.abs() > Decimal::ZERO {
+                        if size.signum() != size_prev.signum() {
+                            *entry_price = order_info.price;
+                        } else {
+                            *entry_price = (entry_price_prev * size_prev.abs()
+                                + order_info.price * diff.abs())
+                                / size.abs();
+                        }
+                    }
+
+                    if diff > Decimal::ZERO {
+                        let value = position.value(&self, order_info.market);
+                        self.wallet
+                            .reserve(value, self.api.quote_asset())
+                            .expect("Reserve quote asset");
+                        self.wallet
+                            .withdraw(value, self.api.quote_asset())
+                            .expect("Withdraw quote asset");
+                    } else if diff < Decimal::ZERO {
+                        let value = position_prev.value(&self, order_info.market);
+                        self.wallet.deposit(value, self.api.quote_asset());
+                    }
+
+                    //log::error!("Entry price: {}, {}, {}, {}, {}", size, size_prev, entry_price, entry_price_prev, order_info.price);
+                }
+            }
+
+            /*
+            // Update wallet.
+            let qty = (next.get(&order_info.market).cloned().unwrap_or_default().abs() - curr.get(&order_info.market).cloned().unwrap_or_default().abs()) * order_info.price;
+            log::error!("Quote asset change: {:?} {}", order_info, qty);
+            if qty < Decimal::ZERO {
+                self.wallet.deposit(-qty, self.api.quote_asset());
+            } else
+            if qty > Decimal::ZERO {
+                self.wallet.reserve(qty, self.api.quote_asset()).expect("Reserve quote asset");
+                self.wallet.withdraw(qty, self.api.quote_asset()).expect("Withdraw quote asset");
+            }
+            */
+        }
+
+        // Clear all closed positions.
+        modified_open_positions
+            .retain(|position| position.sizes.iter().any(|(_, (size, _))| !size.is_zero()));
+        self.open_positions = modified_open_positions.clone();
+        self.open_positions_prev = modified_open_positions.clone();
+
+        //log::error!("actual open positions: {:?}", self.open_positions);
+
+        Ok(())
+    }
+
+    async fn order(&self, orders: Vec<Order>) -> Result<Vec<OrderInfo>, ApiError> {
+        let mut order_futures = Vec::new();
+        for order in orders {
+            order_futures.push(self.api.place_order(order));
+        }
+        join_all(order_futures).await.into_iter().collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Position {
+    position_id: Uuid,
+    sizes: HashMap<Symbol, (Decimal, Decimal)>,
+}
+
+impl Position {
+    pub fn new() -> Self {
+        Self {
+            position_id: Uuid::new_v4(),
+            sizes: HashMap::new(),
+        }
+    }
+
+    pub fn size(&mut self, symbol: Symbol) -> &mut Decimal {
+        &mut self.sizes.entry(symbol).or_default().0
+    }
+
+    fn entry_price(&mut self, symbol: Symbol) -> &mut Decimal {
+        &mut self.sizes.entry(symbol).or_default().1
+    }
+
+    pub fn value<A: Api>(&self, exchange: &Exchange<A>, symbol: Symbol) -> Decimal {
+        let (size, entry_price) = self.sizes.get(&symbol).cloned().unwrap_or_default();
+        assert!(entry_price >= Decimal::ZERO);
+        let open_value = entry_price * size.abs();
+        let close_value = exchange.price(symbol).unwrap() * size.abs();
+        assert!(open_value >= Decimal::ZERO);
+        assert!(close_value >= Decimal::ZERO);
+        let pnl = if size >= Decimal::ZERO {
+            close_value - open_value
+        } else {
+            open_value - close_value
+        };
+        let result = open_value + pnl;
+        assert!(result >= Decimal::ZERO);
+        result
+    }
+
+    pub fn total_value<A: Api>(&self, exchange: &Exchange<A>) -> Decimal {
+        self.sizes
+            .keys()
+            .map(|&symbol| self.value(exchange, symbol))
+            .sum()
+    }
+
+    pub fn close(&mut self) {
+        for (size, _) in self.sizes.values_mut() {
+            *size = Decimal::ZERO;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        apis::Ftx,
+    };
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    #[test]
+    fn long_position() {
+        let symbol = Symbol::perp("BTC");
+        let time = Utc::now();
+        let exchange = Exchange {
+            api: Ftx::new(),
+            wallet: Wallet::new(),
+            candles: {
+                let mut candles = HashMap::new();
+                let mut vec = VecDeque::new();
+                vec.push_back((
+                    CandleKey {
+                        market: symbol,
+                        time,
+                        interval: Duration::minutes(1),
+                    },
+                    Some(Candle {
+                        close: dec!(20000),
+                        volume: dec!(0),
+                    }),
+                ));
+                candles.insert(symbol, vec);
+                candles
+            },
+            markets: Markets::new(),
+            current_time: time,
+            real_time: false,
+            open_positions_prev: Vec::new(),
+            open_positions: Vec::new(),
+        };
+
+        let mut position = Position::new();
+        *position.size(symbol) = dec!(1);
+        *position.entry_price(symbol) = dec!(10000);
+        assert_eq!(position.total_value(&exchange), dec!(20000));
+    }
+
+    #[test]
+    fn short_position() {
+        let symbol = Symbol::perp("BTC");
+        let time = Utc::now();
+        let exchange = Exchange {
+            api: Ftx::new(),
+            wallet: Wallet::new(),
+            candles: {
+                let mut candles = HashMap::new();
+                let mut vec = VecDeque::new();
+                vec.push_back((
+                    CandleKey {
+                        market: symbol,
+                        time,
+                        interval: Duration::minutes(1),
+                    },
+                    Some(Candle {
+                        close: dec!(20000),
+                        volume: dec!(0),
+                    }),
+                ));
+                candles.insert(symbol, vec);
+                candles
+            },
+            markets: Markets::new(),
+            current_time: time,
+            real_time: false,
+            open_positions_prev: Vec::new(),
+            open_positions: Vec::new(),
+        };
+
+        let mut position = Position::new();
+        *position.size(symbol) = dec!(-1);
+        *position.entry_price(symbol) = dec!(10000);
+        assert_eq!(position.total_value(&exchange), dec!(0));
     }
 
     /*
-    async fn enter_many(&mut self) -> Result<(), ApiError> {
-        let mut order_futures = Vec::new();
-        let to_enter: Vec<PreparedPosition> = self.prepared_positions.drain(..).collect();
-        for prepared_position in to_enter {
-            order_futures.push(self.enter_one(prepared_position));
-        }
-        for order_result in join_all(order_futures).await {
-            let open_position = order_result?;
-            log::info!(
-                "Enter position: {} {} {}",
-                open_position.side,
-                open_position.size,
-                open_position.market
-            );
-            let quote_enter_size = open_position.enter_size * open_position.enter_price;
-            //let quote_reserved_size = open_position.rounded_size * open_position.price;
-
-            match open_position.market {
-                Symbol::Perp(_) => {
-                    self.wallet
-                        .withdraw(quote_enter_size, self.api.quote_asset())
-                        .unwrap();
-                    /*
-                    self.wallet
-                        .free(
-                            quote_reserved_size - quote_enter_size,
-                            self.api.quote_asset(),
-                        )
-                        .unwrap();
-                    */
-                }
-            }
-
-            self.open_positions.push(open_position);
-        }
-        /*
-        for prepared_position in to_discard {
-            let quote_rounded_size = prepared_position.rounded_size * prepared_position.price;
-
-            match prepared_position.market {
-                Symbol::Perp(_) => {
-                    self.wallet
-                        .free(quote_rounded_size, self.api.quote_asset())
-                        .unwrap();
-                }
-            }
-        }
-        */
-        self.wallet.free_all(self.api.quote_asset());
-
-        Ok(())
-    }
-
-    async fn exit_many(&mut self) -> Result<(), ApiError> {
-        let mut order_futures = Vec::new();
-        let (to_exit, to_keep): (Vec<OpenedPosition>, Vec<OpenedPosition>) = self
-            .open_positions
-            .drain(..)
-            .partition(|open_position| self.to_close.borrow_mut().remove(&open_position.id()));
-        for open_position in to_exit {
-            order_futures.push(self.exit_one(open_position));
-        }
-        for order_result in join_all(order_futures).await {
-            let closed_position = order_result?;
-            log::info!(
-                "Exit position: {} {} {}, PnL is {}",
-                closed_position.side,
-                closed_position.size,
-                closed_position.market,
-                closed_position.pnl()
-            );
-            let quote_enter_size = closed_position.enter_size * closed_position.enter_price;
-            let quote_exit_size = quote_enter_size + closed_position.pnl();
-
-            match closed_position.market {
-                Symbol::Perp(_) => {
-                    self.wallet.deposit(quote_exit_size, self.api.quote_asset());
-                }
-            }
-
-            self.closed_positions.push(closed_position);
-        }
-        self.open_positions = to_keep;
-
-        Ok(())
-    }
-
-    async fn enter_one(
-        &self,
-        prepared_position: PreparedPosition,
-    ) -> Result<OpenedPosition, ApiError> {
-        log::trace!("Entering one position");
-        let update = self
-            .api
-            .place_order(Order {
-                market: prepared_position.market,
-                side: prepared_position.side,
-                size: prepared_position.size,
-                order_type: OrderType::Market,
-                reduce_only: false,
-                time: self.current_time,
-                price: prepared_position.price,
-            })
-            .await?;
-
-        Ok(OpenedPosition {
-            market: prepared_position.market,
-            side: prepared_position.side,
-            size: prepared_position.size,
-            price: prepared_position.price,
-            //estimated_price: prepared_position.estimated_price,
-            rounded_size: prepared_position.rounded_size,
-            enter_price: update.price,
-            enter_size: update.size,
-            time: prepared_position.time,
-            enter_time: update.time,
-            id: prepared_position.id,
-            current_price: update.price,
-            current_time: update.time,
-        })
-    }
-
-    async fn exit_one(&self, open_position: OpenedPosition) -> Result<ClosedPosition, ApiError> {
-        let update = self
-            .api
-            .place_order(Order {
-                market: open_position.market,
-                side: open_position.side.other(),
-                size: open_position.enter_size,
-                order_type: OrderType::Market,
-                reduce_only: true,
-                time: self.current_time,
-                price: open_position.current_price,
-            })
-            .await?;
-
-        Ok(ClosedPosition {
-            market: open_position.market,
-            side: open_position.side,
-            size: open_position.size,
-            price: open_position.price,
-            //estimated_price: open_position.estimated_price,
-            rounded_size: open_position.rounded_size,
-            enter_price: open_position.enter_price,
-            enter_size: open_position.enter_size,
-            exit_price: update.price,
-            time: open_position.time,
-            enter_time: open_position.enter_time,
-            exit_time: update.time,
-            id: open_position.id,
-        })
-    }
-    */
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct PositionId(pub(crate) Uuid);
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
-pub struct SuggestedPosition {
-    pub symbol: Symbol,
-    pub side: Side,
-    /// Position size expressed in the base asset.
-    pub size: Decimal,
-}
-
-pub trait Position {
-    fn symbol(&self) -> Symbol;
-    fn id(&self) -> PositionId;
-    fn want_size(&self) -> Decimal;
-    fn want_price(&self) -> Decimal;
-    fn side(&self) -> Side;
-}
-
-pub trait LivePosition: Position {
-    fn size(&self) -> Decimal;
-    fn enter_time(&self) -> DateTime<Utc>;
-    fn exit_time(&self) -> DateTime<Utc>;
-    fn enter_price(&self) -> Decimal;
-    fn exit_price(&self) -> Decimal;
-
-    fn pnl(&self) -> Decimal {
-        match self.side() {
-            Side::Long => self.size() * (self.exit_price() - self.enter_price()),
-            Side::Short => self.size() * (self.enter_price() - self.exit_price()),
-        }
-    }
-
-    fn quote_enter_size(&self) -> Decimal {
-        self.size() * self.enter_price()
-    }
-
-    fn quote_exit_size(&self) -> Decimal {
-        self.size() * self.exit_price()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
-pub struct PreparedPosition {
-    market: Symbol,
-    side: Side,
-    size: Decimal,
-    price: Decimal,
-    //estimated_price: Decimal,
-    rounded_size: Decimal,
-    time: DateTime<Utc>,
-    id: PositionId,
-}
-
-impl Position for PreparedPosition {
-    fn symbol(&self) -> Symbol {
-        self.market
-    }
-
-    fn id(&self) -> PositionId {
-        self.id
-    }
-
-    fn side(&self) -> Side {
-        self.side
-    }
-
-    fn want_size(&self) -> Decimal {
-        self.rounded_size
-    }
-
-    fn want_price(&self) -> Decimal {
-        self.price
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
-pub struct OpenedPosition {
-    market: Symbol,
-    side: Side,
-    size: Decimal,
-    price: Decimal,
-    //estimated_price: Decimal,
-    rounded_size: Decimal,
-    enter_price: Decimal,
-    enter_size: Decimal,
-    time: DateTime<Utc>,
-    enter_time: DateTime<Utc>,
-    id: PositionId,
-    current_price: Decimal,
-    current_time: DateTime<Utc>,
-}
-
-impl Position for OpenedPosition {
-    fn symbol(&self) -> Symbol {
-        self.market
-    }
-
-    fn id(&self) -> PositionId {
-        self.id
-    }
-
-    fn side(&self) -> Side {
-        self.side
-    }
-
-    fn want_size(&self) -> Decimal {
-        self.rounded_size
-    }
-
-    fn want_price(&self) -> Decimal {
-        self.price
-    }
-}
-
-impl LivePosition for OpenedPosition {
-    fn size(&self) -> Decimal {
-        self.size
-    }
-
-    fn enter_price(&self) -> Decimal {
-        self.enter_price
-    }
-
-    fn exit_price(&self) -> Decimal {
-        self.current_price
-    }
-
-    fn enter_time(&self) -> DateTime<Utc> {
-        self.enter_time
-    }
-
-    fn exit_time(&self) -> DateTime<Utc> {
-        self.current_time
-    }
-}
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
-pub struct ClosedPosition {
-    market: Symbol,
-    side: Side,
-    size: Decimal,
-    price: Decimal,
-    //estimated_price: Decimal,
-    rounded_size: Decimal,
-    enter_price: Decimal,
-    enter_size: Decimal,
-    exit_price: Decimal,
-    time: DateTime<Utc>,
-    enter_time: DateTime<Utc>,
-    exit_time: DateTime<Utc>,
-    id: PositionId,
-}
-
-impl Position for ClosedPosition {
-    fn symbol(&self) -> Symbol {
-        self.market
-    }
-
-    fn id(&self) -> PositionId {
-        self.id
-    }
-
-    fn side(&self) -> Side {
-        self.side
-    }
-
-    fn want_size(&self) -> Decimal {
-        self.rounded_size
-    }
-
-    fn want_price(&self) -> Decimal {
-        self.price
-    }
-}
-
-impl LivePosition for ClosedPosition {
-    fn size(&self) -> Decimal {
-        self.size
-    }
-
-    fn enter_price(&self) -> Decimal {
-        self.enter_price
-    }
-
-    fn exit_price(&self) -> Decimal {
-        self.exit_price
-    }
-
-    fn enter_time(&self) -> DateTime<Utc> {
-        self.enter_time
-    }
-
-    fn exit_time(&self) -> DateTime<Utc> {
-        self.exit_time
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
-#[sqlx(rename_all = "UPPERCASE")]
-pub enum Side {
-    Long,
-    Short,
-}
-
-impl Side {
-    pub fn other(&self) -> Self {
-        match self {
-            Self::Long => Self::Short,
-            Self::Short => Self::Long,
-        }
-    }
-}
-
-impl fmt::Display for Side {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Side::Long => "buy",
-                Side::Short => "sell",
-            }
-        )
-    }
-}
-
-pub struct PositionData<P> {
-    position: P,
-    is_open: bool,
-}
-
-pub struct SuggestedTransaction {
-    opens: Vec<SuggestedPosition>,
-    closes: Vec<SuggestedPosition>
-}
-
-impl SuggestedTransaction {
-    pub fn new() -> SuggestedTransaction {
-        SuggestedTransaction { opens: Vec::new(), closes: Vec::new() }
-    }
-
-    pub fn open(&mut self, position: SuggestedPosition) {
-        self.opens.push(position);
-    }
-
-    pub fn close(&mut self, position: &OpenedPosition) {
-        self.closes.push(SuggestedPosition {
-            symbol: position.symbol(),
-            side: position.side().other(),
-            size: position.size(),
-        });
-    }
-
-    pub fn close_all<A: Api>(&mut self, exchange: &Exchange<A>) {
-        for open_position in exchange.open_positions() {
-            self.close(open_position);
-        }
-    }
-
-    pub fn coalesce(self) -> SuggestedTransaction {
-        let positions: Vec<(SuggestedPosition, bool)> = self.closes
-            .into_iter()
-            .map(|p| (p, false))
-            .chain(
-                self.closes
-                    .into_iter()
-                    .map(|p| (p, true))
-            )
-            .collect();
-
-        let symbols: HashSet<Symbol> = positions.iter().map(|(p, _)| p.symbol).collect();
-
-        let opens = Vec::new();
-        let closes = Vec::new();
-
-        for symbol in symbols {
-            let mut size = Decimal::ZERO;
-            for (position, is_open) in positions.into_iter().filter(|(p, _)| p.symbol == symbol) {
-                if position.side == Side::Long {
-                    size += position.size;
-                } else {
-                    size -= position.size;
-                }
-            }
-            if size.abs() > Decimal::ZERO {
-                opens.push(SuggestedPosition {
-                    side: if size > Decimal::ZERO { Side::Long } else { Side::Short },
-                    size: size.abs(),
-                    symbol,
-                });
-            }
-        }
-
-        SuggestedTransaction {
-            opens,
-            closes
-        }
-    }
-
-    pub fn prepare<A: Api>(self, exchange: &mut Exchange<A>) -> Result<PreparedTransaction, PrepareError> {
-        let wallet = exchange.wallet.clone();
-
-        let mut suggested_positions = self.closes;
-        suggested_positions.append(&mut self.opens);
-
-        let prepare = |suggested_position: SuggestedPosition| {
-            let rounded_size = exchange.round_size(suggested_position.symbol, suggested_position.size);
-
-            let price = exchange
-                .candles
-                .get(&suggested_position.symbol)
-                .ok_or(PrepareError::MarketClosed)?
-                .front()
-                .ok_or(PrepareError::MarketClosed)?
-                .1
-                .map(|candle| candle.close)
-                .ok_or(PrepareError::MarketClosed)?;
-            let quote_size = rounded_size * price;
-            /*
-            let estimated_price = self
-                .markets
-                .market(position.market)
-                .unwrap()
-                .orderbook()
-                .execution_price(position.size, position.side)
-                .unwrap();
-            */
-    
-            match suggested_position.symbol {
-                Symbol::Perp(_) => {
-                    wallet
-                        .reserve(quote_size, exchange.api.quote_asset())
-                        .map_err(|_| PrepareError::InsufficientAssets)?;
-                }
-            }
-
-            Ok::<PreparedPosition, PrepareError>(PreparedPosition {
-                market: suggested_position.symbol,
-                side: suggested_position.side,
-                size: suggested_position.size,
-                //estimated_price,
-                rounded_size,
-                price,
-                time: exchange.current_time,
-                id: PositionId(Uuid::new_v4()),
-            })
+    #[tokio::test]
+    async fn enter_exit_position() {
+        let symbol = Symbol::perp("BTC");
+        let time = Utc::now();
+        let mut wallet = Wallet::new();
+        let quote_asset = Asset::new("USD");
+        wallet.deposit(dec!(10000), quote_asset);
+
+        let api = Simulate::new(Ftx::new(), wallet);
+        let mut exchange = Exchange {
+            api,
+            wallet: Wallet::new(),
+            candles: {
+                let mut candles = HashMap::new();
+                let mut vec = VecDeque::new();
+                vec.push_back((CandleKey {
+                    market: symbol,
+                    time,
+                    interval: Duration::minutes(1),
+                }, Some(Candle {
+                    close: dec!(10000),
+                    volume: dec!(0),
+                })));
+                candles.insert(symbol, vec);
+                candles
+            },
+            markets: Markets::new(),
+            current_time: time,
+            real_time: false,
+            open_positions_prev: Vec::new(),
+            open_positions: Vec::new(),
         };
 
-        // On success, set reserved amounts accordingly.
-        exchange.wallet = wallet;
-        
-        Ok(PreparedTransaction {
-            opens: self.opens.into_iter().map(prepare).collect::<Result<Vec<PreparedPosition>, PrepareError>>()?,
-            closes: self.closes.into_iter().map(prepare).collect::<Result<Vec<PreparedPosition>, PrepareError>>()?,
-        })
-    }
-}
+        let mut position = Position::new();
+        *position.size(symbol) = dec!(1);
 
-pub struct PreparedTransaction {
-    opens: Vec<PreparedPosition>,
-    closes: Vec<PreparedPosition>
-}
+        exchange.open(position).unwrap();
+        exchange.execute().await.unwrap();
 
-impl PreparedTransaction {
-    pub fn issue<A: Api>(self, exchange: &mut Exchange<A>) {
-        exchange.prepared_transactions = Some(self);
+        assert_eq!(exchange.wallet().total(quote_asset), dec!(0));
     }
+    */
 }

@@ -1,7 +1,7 @@
 use super::Api;
 use crate::{
     apis::{ApiError, Order, OrderInfo},
-    Asset, Candle, CandleKey, Markets, Symbol, Wallet,
+    Asset, Candle, CandleKey, Markets, Symbol, Wallet, Side,
 };
 
 use async_trait::async_trait;
@@ -55,9 +55,16 @@ impl<A: Api> Api for Simulate<A> {
         //wallet.withdraw(quote_size, self.quote_asset()).unwrap();
 
         Ok(OrderInfo {
-            size: order.size * (Decimal::one() - self.api.order_fee().await),
-            price: order.price,
+            order_id: order.order_id,
+            size: order.size,
+            price: if order.side == Side::Buy {
+                order.current_price * (Decimal::one() + self.api.order_fee().await)
+            } else {
+                order.current_price * (Decimal::one() - self.api.order_fee().await)
+            },
             time: order.time,
+            side: order.side,
+            market: order.market,
         })
     }
     /*
@@ -118,9 +125,10 @@ impl<A: Api> Api for Simulate<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{apis::{Ftx, OrderType}, Side};
+    use crate::{apis::Ftx, OrderType, Side};
     use chrono::Utc;
     use rust_decimal_macros::dec;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn deduct_fee_long() {
@@ -128,37 +136,33 @@ mod tests {
         wallet.deposit(dec!(1000), Asset::new("USD"));
         let api = Simulate::new(Ftx::new(), wallet);
         let order = Order {
+            order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
-            side: Side::Long,
+            side: Side::Buy,
             size: dec!(0.01),
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
-            price: dec!(10000)
+            current_price: dec!(10000),
         };
 
-        let OrderInfo {
-            size,
-            ..
-        } = api.place_order(order).await.unwrap();
+        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
 
         assert!(size < dec!(0.01));
 
         let order = Order {
+            order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
-            side: Side::Short,
+            side: Side::Sell,
             size,
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
-            price: dec!(10000)
+            current_price: dec!(10000),
         };
 
-        let OrderInfo {
-            size,
-            ..
-        } = api.place_order(order).await.unwrap();
-        
+        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+
         assert!(size < dec!(0.01));
     }
 
@@ -168,37 +172,33 @@ mod tests {
         wallet.deposit(dec!(1000), Asset::new("USD"));
         let api = Simulate::new(Ftx::new(), wallet);
         let order = Order {
+            order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
-            side: Side::Short,
+            side: Side::Sell,
             size: dec!(0.01),
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
-            price: dec!(10000)
+            current_price: dec!(10000),
         };
 
-        let OrderInfo {
-            size,
-            ..
-        } = api.place_order(order).await.unwrap();
+        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
 
         assert!(size < dec!(0.01));
 
         let order = Order {
+            order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
-            side: Side::Long,
+            side: Side::Buy,
             size,
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
-            price: dec!(10000)
+            current_price: dec!(10000),
         };
 
-        let OrderInfo {
-            size,
-            ..
-        } = api.place_order(order).await.unwrap();
-        
+        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+
         assert!(size < dec!(0.01));
     }
 }

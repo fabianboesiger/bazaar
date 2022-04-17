@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::Asset;
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub enum WalletError {
     #[error("Not enough total available.")]
     NotEnoughTotal,
     #[error("Not enough reserved.")]
@@ -40,54 +40,54 @@ impl Wallet {
         free_qty += qty;
     }
 
-    pub fn reserve(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
+    pub fn reserve(&mut self, qty: Decimal, asset: Asset) -> Result<(), WalletError> {
         assert!(qty >= Decimal::ZERO);
         let mut free_qty = self.free.entry(asset).or_default();
         log::debug!("Reserving {} {}", qty, asset);
         if qty > *free_qty {
-            return Err(Error::NotEnoughTotal);
+            return Err(WalletError::NotEnoughTotal);
         }
         free_qty -= qty;
         Ok(())
     }
 
-    pub fn free(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
+    pub fn unreserve(&mut self, qty: Decimal, asset: Asset) -> Result<(), WalletError> {
         assert!(qty >= Decimal::ZERO);
         let mut free_qty = self.free.entry(asset).or_default();
         let total_qty = self.total.entry(asset).or_default();
         let reserved_qty = *total_qty - *free_qty;
         if qty > reserved_qty {
-            return Err(Error::NotEnoughReserved);
+            return Err(WalletError::NotEnoughReserved);
         }
         free_qty += qty;
         Ok(())
     }
 
-    pub fn free_all(&mut self, asset: Asset) {
+    pub fn unreserve_all(&mut self, asset: Asset) {
         let mut free_qty = self.free.entry(asset).or_default();
         let total_qty = self.total.entry(asset).or_default();
         let reserved_qty = *total_qty - *free_qty;
         free_qty += reserved_qty;
     }
 
-    pub fn free_sum(&self, asset: Asset) -> Decimal {
+    pub fn free(&self, asset: Asset) -> Decimal {
         self.free.get(&asset).cloned().unwrap_or(Decimal::ZERO)
     }
 
-    pub fn total_sum(&self, asset: Asset) -> Decimal {
+    pub fn total(&self, asset: Asset) -> Decimal {
         self.total.get(&asset).cloned().unwrap_or(Decimal::ZERO)
     }
 
     /// Withdraw some quantity of an asset.
     /// Assumes that the quantity to be withdrawn was reserved beforehand.
-    pub fn withdraw(&mut self, qty: Decimal, asset: Asset) -> Result<(), Error> {
+    pub fn withdraw(&mut self, qty: Decimal, asset: Asset) -> Result<(), WalletError> {
         assert!(qty >= Decimal::ZERO);
         log::debug!("Withdrawing {} {}", qty, asset);
         let mut total_qty = self.total.entry(asset).or_default();
         let free_qty = self.free.entry(asset).or_default();
         let reserved_qty = *total_qty - *free_qty;
         if qty > reserved_qty {
-            return Err(Error::NotEnoughReserved);
+            return Err(WalletError::NotEnoughReserved);
         }
         total_qty -= qty;
         Ok(())

@@ -1,7 +1,7 @@
 use super::{Order, OrderInfo};
 use crate::{
-    apis::{Api, ApiError, OrderType},
-    Asset, Candle, CandleKey, MarketInfo, Markets, Side, Symbol, Wallet,
+    apis::{Api, ApiError},
+    Asset, Candle, CandleKey, MarketInfo, Markets, OrderType, Side, Symbol, Wallet,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -147,8 +147,8 @@ impl Api for Ftx {
             .request(PlaceOrder {
                 market: self.format_market(order.market),
                 side: match order.side {
-                    Side::Long => ftx::rest::Side::Buy,
-                    Side::Short => ftx::rest::Side::Sell,
+                    Side::Buy => ftx::rest::Side::Buy,
+                    Side::Sell => ftx::rest::Side::Sell,
                 },
                 price: match order.order_type {
                     OrderType::Market => None,
@@ -162,13 +162,17 @@ impl Api for Ftx {
                 reduce_only: order.reduce_only,
                 ioc: is_market_order,
                 post_only: !is_market_order,
+                client_id: Some(order.order_id.to_string()),
                 ..Default::default()
             })
             .await
             .map(|info| OrderInfo {
+                order_id: order.order_id,
                 price: info.avg_fill_price.unwrap(),
                 size: info.filled_size.unwrap_or(Decimal::ZERO),
                 time: info.created_at,
+                market: order.market,
+                side: order.side,
             })
             .map_err(|err| match err {
                 ftx::rest::Error::Api(_) => ApiError::Api,

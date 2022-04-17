@@ -1,7 +1,7 @@
 use bazaar::{
     apis::{Api, Ftx},
     strategies::{Settings, Strategy},
-    AnyError, Bazaar, Exchange, Side, SuggestedPosition, Symbol,
+    AnyError, Bazaar, Exchange, Position, Symbol,
 };
 use chrono::{Duration, TimeZone, Utc};
 use rolling_norm::Series;
@@ -53,7 +53,7 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
             .close
             .to_f32()
             .unwrap();
-            
+
         self.fast.insert(price);
         self.slow.insert(price);
 
@@ -61,26 +61,17 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
 
         if curr_long_crossover && !self.last_long_crossover {
             // exit all positions and go long.
-            for position in exchange.open_positions() {
-                exchange.exit(position);
-            }
-            let position = exchange.prepare(SuggestedPosition {
-                symbol: self.symbol,
-                size: dec!(0.01),
-                side: Side::Long,
-            })?;
-            exchange.enter(position);
+            exchange.close_all();
+            let mut position = Position::new();
+            *position.size(self.symbol) = dec!(0.01);
+            exchange.open(position)?;
         } else if !curr_long_crossover && self.last_long_crossover {
             // exit all positions and go short.
-            for position in exchange.open_positions() {
-                exchange.exit(position);
-            }
-            let position = exchange.prepare(SuggestedPosition {
-                symbol: self.symbol,
-                size: dec!(0.01),
-                side: Side::Short,
-            })?;
-            exchange.enter(position);
+            exchange.close_all();
+            let mut position = Position::new();
+            // We go short by setting a negative size.
+            *position.size(self.symbol) = dec!(-0.01);
+            exchange.open(position)?;
         }
 
         self.last_long_crossover = curr_long_crossover;

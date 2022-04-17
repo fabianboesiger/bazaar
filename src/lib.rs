@@ -7,6 +7,7 @@ mod asset;
 mod candle;
 mod exchange;
 mod market;
+mod order;
 pub mod strategies;
 mod wallet;
 
@@ -15,12 +16,13 @@ pub use candle::*;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 pub use exchange::*;
 pub use market::*;
+pub use order::*;
 use rust_decimal_macros::dec;
 pub use wallet::*;
 
-use apis::{Api, ForwardFill, Simulate, Store};
+use apis::{Api, ForwardFill, Monitor, Simulate, Store};
 use rust_decimal::Decimal;
-use strategies::{Monitor, Strategy};
+use strategies::Strategy;
 
 pub struct Bazaar {
     /// The start capital for simulated backtesting in USD.
@@ -44,15 +46,12 @@ impl Default for Bazaar {
 impl Bazaar {
     /// Runs your strategy live.
     #[cfg(not(feature = "backtest"))]
-    pub async fn run<A: Api, B: Api, S: Strategy<B>>(
-        self,
-        api: A,
-        strategy: S,
-    ) -> Result<(), AnyError>
+    pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
     where
-        Monitor<B, S>: Strategy<Simulate<ForwardFill<Store<A>>>>,
+        A: Api,
+        S: Strategy<Monitor<A>>,
     {
-        let strategy = Monitor::new(strategy);
+        let api = Monitor::new(api);
         let exchange = Exchange::new(api, self.start_time);
         exchange.run(strategy).await?;
 
@@ -63,22 +62,18 @@ impl Bazaar {
     /// Exchange data is stored locally to speed up backtesting.
     /// Missing candles are forward filled.
     #[cfg(feature = "backtest")]
-    pub async fn run<A: Api, B: Api, S: Strategy<B>>(
-        self,
-        api: A,
-        strategy: S,
-    ) -> Result<(), AnyError>
+    pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
     where
-        Monitor<B, S>: Strategy<Simulate<ForwardFill<Store<A>>>>,
+        A: Api,
+        S: Strategy<Monitor<Simulate<ForwardFill<Store<A>>>>>,
     {
         let mut wallet = Wallet::new();
         wallet.deposit(self.start_capital, Asset::new("USD"));
 
-        let strategy = Monitor::new(strategy);
-        let api = Simulate::new(
+        let api = Monitor::new(Simulate::new(
             ForwardFill::new(Store::new(api).await, self.forward_fill),
             wallet,
-        );
+        ));
         let exchange = Exchange::new(api, self.start_time);
         exchange.run(strategy).await?;
 

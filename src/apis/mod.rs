@@ -3,22 +3,24 @@ mod binance;
 mod forward_fill;
 #[cfg(feature = "ftx")]
 mod ftx;
+mod monitor;
 mod simulate;
 mod store;
 
+#[cfg(feature = "binance")]
+pub use self::binance::*;
 #[cfg(feature = "ftx")]
 pub use self::ftx::*;
-#[cfg(feature = "binance")]
-pub use self::ftx::*;
-use chrono::{DateTime, Utc};
 pub use forward_fill::*;
+pub use monitor::*;
 pub use simulate::*;
 pub use store::*;
 
+use chrono::{DateTime, Utc};
 use rust_decimal::prelude::*;
 use thiserror::Error;
 
-use crate::{Asset, Candle, CandleKey, Markets, Side, Symbol, Wallet};
+use crate::{Asset, Candle, CandleKey, Markets, Order, OrderInfo, Symbol, Wallet};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -44,18 +46,8 @@ pub trait Api: Send + Sync {
     async fn update_markets(&self, market: &mut Markets) -> Result<(), ApiError>;
     async fn order_fee(&self) -> Decimal;
     fn quote_asset(&self) -> Asset;
-}
-
-/// Defines an order that can be placed in an exchange.
-#[derive(Debug)]
-pub struct Order {
-    pub market: Symbol,
-    pub side: Side,
-    pub size: Decimal,
-    pub order_type: OrderType,
-    pub reduce_only: bool,
-    pub time: DateTime<Utc>,
-    pub price: Decimal,
+    fn hello(&self, _strategy_name: &'static str) {}
+    fn status(&self, _time: DateTime<Utc>, _total: Decimal) {}
 }
 
 #[derive(Error, Debug)]
@@ -66,21 +58,9 @@ pub enum ApiError {
     Api,
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub enum OrderType {
-    Limit(Decimal),
-    Market,
-}
-
-pub struct OrderInfo {
-    pub size: Decimal,
-    pub price: Decimal,
-    pub time: DateTime<Utc>,
-}
-
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, TimeZone};
+    use chrono::{Duration, TimeZone, Utc};
 
     use super::*;
 

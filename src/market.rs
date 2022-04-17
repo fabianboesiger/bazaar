@@ -1,7 +1,10 @@
-use crate::Asset;
+use crate::{apis::Api, Asset, Candle, CandleKey, Exchange};
 use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+};
 
 pub struct Markets {
     pub(crate) markets: HashMap<Symbol, MarketInfo>,
@@ -182,6 +185,12 @@ impl Orderbook {
     }
 }
 */
+
+pub struct Market {
+    market_info: MarketInfo,
+    // The current candle.
+    //candles: VecDeque<(CandleKey, Candle)>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct MarketInfo {
