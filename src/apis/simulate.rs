@@ -1,7 +1,7 @@
 use super::Api;
 use crate::{
     apis::{ApiError, Order, OrderInfo},
-    Asset, Candle, CandleKey, Markets, Symbol, Wallet, Side,
+    Asset, Candle, CandleKey, Markets, Side, Symbol, Wallet,
 };
 
 use async_trait::async_trait;

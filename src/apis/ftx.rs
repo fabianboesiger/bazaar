@@ -73,7 +73,7 @@ impl Api for Ftx {
             .rest
             .request(req.clone())
             .await
-            .expect(&format!("Request failed for: {:?}", req))
+            .unwrap_or_else(|_| panic!("Request failed for: {:?}", req))
             .into_iter()
             .map(|candle| {
                 (

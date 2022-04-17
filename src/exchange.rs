@@ -151,7 +151,7 @@ impl<A: Api> Exchange<A> {
         let positions_total: Decimal = self
             .open_positions
             .iter()
-            .map(|position| position.total_value(&self))
+            .map(|position| position.total_value(self))
             .sum();
 
         wallet_total + positions_total
@@ -508,7 +508,8 @@ impl<A: Api> Exchange<A> {
                     }
 
                     if diff > Decimal::ZERO {
-                        let value = position.value(&self, order_info.market);
+                        // Increase position size.
+                        let value = position.value(self, order_info.market);
                         self.wallet
                             .reserve(value, self.api.quote_asset())
                             .expect("Reserve quote asset");
@@ -516,26 +517,14 @@ impl<A: Api> Exchange<A> {
                             .withdraw(value, self.api.quote_asset())
                             .expect("Withdraw quote asset");
                     } else if diff < Decimal::ZERO {
-                        let value = position_prev.value(&self, order_info.market);
+                        // Decrease position size.
+                        let value = position_prev.value(self, order_info.market);
                         self.wallet.deposit(value, self.api.quote_asset());
                     }
 
                     //log::error!("Entry price: {}, {}, {}, {}, {}", size, size_prev, entry_price, entry_price_prev, order_info.price);
                 }
             }
-
-            /*
-            // Update wallet.
-            let qty = (next.get(&order_info.market).cloned().unwrap_or_default().abs() - curr.get(&order_info.market).cloned().unwrap_or_default().abs()) * order_info.price;
-            log::error!("Quote asset change: {:?} {}", order_info, qty);
-            if qty < Decimal::ZERO {
-                self.wallet.deposit(-qty, self.api.quote_asset());
-            } else
-            if qty > Decimal::ZERO {
-                self.wallet.reserve(qty, self.api.quote_asset()).expect("Reserve quote asset");
-                self.wallet.withdraw(qty, self.api.quote_asset()).expect("Withdraw quote asset");
-            }
-            */
         }
 
         // Clear all closed positions.
@@ -576,6 +565,7 @@ impl Position {
         &mut self.sizes.entry(symbol).or_default().0
     }
 
+    #[cfg(test)]
     fn entry_price(&mut self, symbol: Symbol) -> &mut Decimal {
         &mut self.sizes.entry(symbol).or_default().1
     }
@@ -613,9 +603,7 @@ impl Position {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        apis::Ftx,
-    };
+    use crate::apis::Ftx;
     use rust_decimal_macros::dec;
 
     use super::*;
