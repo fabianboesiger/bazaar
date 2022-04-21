@@ -72,7 +72,7 @@ pub enum Symbol {
 
 impl Symbol {
     pub(crate) fn new<T: AsRef<str>>(string: T) -> Self {
-        match string.as_ref().split_once("-") {
+        match string.as_ref().split_once('-') {
             None => unreachable!(),
             /*match string.as_ref().split_once("/") {
                 None => unreachable!(),
