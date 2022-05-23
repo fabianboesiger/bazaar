@@ -8,6 +8,7 @@ use chrono::Utc;
 use ftx::{
     options::{Endpoint, Options},
     rest::{GetHistoricalPrices, GetWalletBalances, PlaceOrder, Rest},
+    ws::MarketType,
 };
 use rust_decimal::prelude::*;
 use std::env;
@@ -18,7 +19,7 @@ pub struct Ftx {
 }
 
 impl Ftx {
-    pub fn new() -> Self {
+    pub fn new_from_env() -> Self {
         let options = Options {
             endpoint: env::var("FTX_ENDPOINT")
                 .map(|endpoint| match endpoint.to_ascii_lowercase().as_str() {
@@ -247,6 +248,9 @@ impl Api for Ftx {
             .map_err(|_| ApiError::Network)?
             .into_iter()
             .filter_map(|market| {
+                if market.market_type != MarketType::Future || !market.name.ends_with("PERP") {
+                    return None;
+                }
                 let symbol = Symbol::perp(market.underlying?);
                 Some((
                     symbol,

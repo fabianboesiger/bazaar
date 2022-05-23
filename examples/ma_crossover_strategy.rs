@@ -62,15 +62,12 @@ impl<A: Api, const FAST: usize, const SLOW: usize> Strategy<A> for MaCrossoverSt
         if curr_long_crossover && !self.last_long_crossover {
             // exit all positions and go long.
             exchange.close_all();
-            let mut position = Position::new();
-            *position.size(self.symbol) = dec!(0.01);
+            let position = Position::default().long(self.symbol, dec!(0.01));
             exchange.open(position)?;
         } else if !curr_long_crossover && self.last_long_crossover {
             // exit all positions and go short.
             exchange.close_all();
-            let mut position = Position::new();
-            // We go short by setting a negative size.
-            *position.size(self.symbol) = dec!(-0.01);
+            let position = Position::default().short(self.symbol, dec!(0.01));
             exchange.open(position)?;
         }
 
@@ -92,6 +89,6 @@ async fn main() -> Result<(), AnyError> {
         start_time: Utc.ymd(2022, 1, 10).and_hms(0, 0, 0),
         ..Default::default()
     }
-    .run(Ftx::new(), MaCrossoverStrategy::<20, 40>::new())
+    .run(Ftx::new_from_env(), MaCrossoverStrategy::<20, 40>::new())
     .await
 }

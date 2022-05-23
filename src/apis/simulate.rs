@@ -61,7 +61,8 @@ impl<A: Api> Api for Simulate<A> {
                 order.current_price * (Decimal::one() + self.api.order_fee().await)
             } else {
                 order.current_price * (Decimal::one() - self.api.order_fee().await)
-            },
+            }
+            .round_dp(8),
             time: order.time,
             side: order.side,
             market: order.market,
@@ -134,7 +135,7 @@ mod tests {
     async fn deduct_fee_long() {
         let mut wallet = Wallet::new();
         wallet.deposit(dec!(1000), Asset::new("USD"));
-        let api = Simulate::new(Ftx::new(), wallet);
+        let api = Simulate::new(Ftx::new_from_env(), wallet);
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
@@ -146,31 +147,31 @@ mod tests {
             current_price: dec!(10000),
         };
 
-        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+        let OrderInfo { price, .. } = api.place_order(order).await.unwrap();
 
-        assert!(size < dec!(0.01));
+        assert!(price > dec!(10000));
 
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
             side: Side::Sell,
-            size,
+            size: dec!(0.01),
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
             current_price: dec!(10000),
         };
 
-        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+        let OrderInfo { price, .. } = api.place_order(order).await.unwrap();
 
-        assert!(size < dec!(0.01));
+        assert!(price < dec!(10000));
     }
 
     #[tokio::test]
     async fn deduct_fee_short() {
         let mut wallet = Wallet::new();
         wallet.deposit(dec!(1000), Asset::new("USD"));
-        let api = Simulate::new(Ftx::new(), wallet);
+        let api = Simulate::new(Ftx::new_from_env(), wallet);
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
@@ -182,23 +183,23 @@ mod tests {
             current_price: dec!(10000),
         };
 
-        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+        let OrderInfo { price, .. } = api.place_order(order).await.unwrap();
 
-        assert!(size < dec!(0.01));
+        assert!(price < dec!(10000));
 
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
             side: Side::Buy,
-            size,
+            size: dec!(0.01),
             order_type: OrderType::Market,
             reduce_only: false,
             time: Utc::now(),
             current_price: dec!(10000),
         };
 
-        let OrderInfo { size, .. } = api.place_order(order).await.unwrap();
+        let OrderInfo { price, .. } = api.place_order(order).await.unwrap();
 
-        assert!(size < dec!(0.01));
+        assert!(price > dec!(10000));
     }
 }

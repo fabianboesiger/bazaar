@@ -3,17 +3,12 @@ use rust_decimal::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt};
 
+#[derive(Default)]
 pub struct Markets {
     pub(crate) markets: HashMap<Symbol, MarketInfo>,
 }
 
 impl Markets {
-    pub fn new() -> Self {
-        Markets {
-            markets: HashMap::new(),
-        }
-    }
-
     pub(crate) fn is_fresh(&self) -> bool {
         self.markets.is_empty()
     }
@@ -72,7 +67,7 @@ pub enum Symbol {
 
 impl Symbol {
     pub(crate) fn new<T: AsRef<str>>(string: T) -> Self {
-        match string.as_ref().split_once("-") {
+        match string.as_ref().split_once('-') {
             None => unreachable!(),
             /*match string.as_ref().split_once("/") {
                 None => unreachable!(),
@@ -198,4 +193,24 @@ pub struct MarketInfo {
     pub size_increment: Decimal,
     pub price_increment: Decimal,
     pub daily_quote_volume: Decimal,
+}
+
+impl MarketInfo {
+    pub fn round_size(&self, size: Decimal) -> Decimal {
+        let increment = self.size_increment;
+        if increment.is_zero() {
+            size
+        } else {
+            (size / increment).round() * increment
+        }
+    }
+
+    pub fn round_price(&self, price: Decimal) -> Decimal {
+        let increment = self.price_increment;
+        if increment.is_zero() {
+            price
+        } else {
+            (price / increment).round() * increment
+        }
+    }
 }

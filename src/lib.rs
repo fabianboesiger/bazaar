@@ -1,6 +1,5 @@
 #![deny(unused_must_use)]
 #![deny(unsafe_code)]
-#![allow(clippy::new_without_default)]
 #![allow(clippy::comparison_chain)]
 
 pub mod apis;
