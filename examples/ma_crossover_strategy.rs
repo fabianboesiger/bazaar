@@ -19,11 +19,11 @@ pub struct MaCrossoverStrategy<const FAST: usize, const SLOW: usize> {
 }
 
 impl<const FAST: usize, const SLOW: usize> MaCrossoverStrategy<FAST, SLOW> {
-    pub fn new() -> Self {
+    pub fn new(symbol: Symbol) -> Self {
         MaCrossoverStrategy {
             fast: Series::new(),
             slow: Series::new(),
-            symbol: Symbol::perp("BTC"),
+            symbol,
             last_long_crossover: false,
         }
     }
@@ -89,6 +89,9 @@ async fn main() -> Result<(), AnyError> {
         start_time: Utc.ymd(2022, 1, 10).and_hms(0, 0, 0),
         ..Default::default()
     }
-    .run(Ftx::new_from_env(), MaCrossoverStrategy::<20, 40>::new())
+    .run(
+        Ftx::new_from_env(),
+        MaCrossoverStrategy::<20, 40>::new(Symbol::perp("BTC")),
+    )
     .await
 }

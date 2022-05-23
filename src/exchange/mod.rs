@@ -518,7 +518,7 @@ mod tests {
         let mut vb1 = ValuedBundle::default();
         vb1.bundle.0.insert(symbol, dec!(10));
 
-        let result = Exchange::<Ftx>::coalesce_orders(&vec![vb1]);
+        let result = Exchange::<Ftx>::coalesce_orders(&[vb1]);
 
         assert_eq!(result.bundle.0.get(&symbol), Some(&dec!(10)));
     }
@@ -530,7 +530,7 @@ mod tests {
         let mut vb1 = ValuedBundle::default();
         vb1.bundle.0.insert(symbol, dec!(-10));
 
-        let result = Exchange::<Ftx>::coalesce_orders(&vec![vb1]);
+        let result = Exchange::<Ftx>::coalesce_orders(&[vb1]);
 
         assert_eq!(result.bundle.0.get(&symbol), Some(&dec!(-10)));
     }
@@ -546,7 +546,7 @@ mod tests {
         let mut vb3 = ValuedBundle::default();
         vb3.bundle.0.insert(symbol, dec!(5));
 
-        let result = Exchange::<Ftx>::coalesce_orders(&vec![vb1, vb2, vb3]);
+        let result = Exchange::<Ftx>::coalesce_orders(&[vb1, vb2, vb3]);
 
         assert_eq!(result.bundle.0.get(&symbol), Some(&dec!(0)));
     }
