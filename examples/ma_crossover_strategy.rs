@@ -90,7 +90,7 @@ async fn main() -> Result<(), AnyError> {
         ..Default::default()
     }
     .run(
-        Ftx::new_from_env(),
+        Ftx::from_env(),
         MaCrossoverStrategy::<20, 40>::new(Symbol::perp("BTC")),
     )
     .await

@@ -135,7 +135,7 @@ mod tests {
     async fn deduct_fee_long() {
         let mut wallet = Wallet::new();
         wallet.deposit(dec!(1000), Asset::new("USD"));
-        let api = Simulate::new(Ftx::new_from_env(), wallet);
+        let api = Simulate::new(Ftx::from_env(), wallet);
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),
@@ -171,7 +171,7 @@ mod tests {
     async fn deduct_fee_short() {
         let mut wallet = Wallet::new();
         wallet.deposit(dec!(1000), Asset::new("USD"));
-        let api = Simulate::new(Ftx::new_from_env(), wallet);
+        let api = Simulate::new(Ftx::from_env(), wallet);
         let order = Order {
             order_id: Uuid::new_v4(),
             market: Symbol::perp("BTC"),

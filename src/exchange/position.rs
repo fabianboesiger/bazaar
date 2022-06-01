@@ -14,8 +14,8 @@ pub struct Position {
     current_size: Bundle,
     current_time: DateTime<Utc>,
     */
-    current: ValuedBundle,
-    next_size: Bundle,
+    pub(crate) current: ValuedBundle,
+    pub(crate) next_size: Bundle,
 }
 
 impl Default for Position {
@@ -53,6 +53,10 @@ impl Position {
         assert!(qty >= Decimal::ZERO);
         *self.size(symbol) = -qty;
         self
+    }
+
+    pub fn symbols(&self) -> impl Iterator<Item = Symbol> {
+        self.current.bundle.0.keys().cloned().collect::<Vec<Symbol>>().into_iter()
     }
 
     // Fits this position to the exchange constrants, for example minimum order size, minimum size increment, ...
@@ -102,12 +106,11 @@ impl Position {
 
     pub(crate) fn valuate(&mut self, valuation: Valuation, time: DateTime<Utc>) {
         self.current.valuation = valuation;
-
         self.current.time = Some(time);
     }
 
     /// Modify the position size.
-    pub fn size(&mut self, symbol: Symbol) -> &mut Decimal {
+    pub(crate) fn size(&mut self, symbol: Symbol) -> &mut Decimal {
         self.next_size.0.entry(symbol).or_default()
     }
 
@@ -121,6 +124,7 @@ impl Position {
     pub(crate) fn order(&self) -> ValuedBundle {
         //let size = self.deltas.iter().map(|(bundle, _)| bundle).fold(Bundle::default(), |a, b| &a + b);
         let order_bundle = &self.next_size - &self.current.bundle;
+        //assert!(self.current.time.is_some());
         ValuedBundle {
             bundle: order_bundle,
             valuation: self.current.valuation.clone(),
@@ -130,7 +134,7 @@ impl Position {
 
     pub(crate) fn resize<O: Into<ValuedBundle>>(&mut self, order: O) {
         let order: ValuedBundle = order.into();
-        self.current.valuation = order.valuation.clone();
+        //self.current.valuation = order.valuation.clone();
         self.current.bundle = &self.current.bundle + &order.bundle;
         self.next_size = self.current.bundle.clone();
         self.deltas.push(order);
@@ -164,6 +168,80 @@ impl Position {
     }
     */
 
+    // Sum of all deltas, stepwise.
+    pub(crate) fn stepwise_delta_sum(&self) -> impl Iterator<Item = Bundle> {
+        self.deltas
+            .iter()
+            //.chain(std::iter::once(&self.current.invert()))
+            .scan(Bundle::default(), |bundle_sum, curr| {
+                *bundle_sum = &*bundle_sum + &curr.bundle;
+                Some(bundle_sum.clone())
+            })
+            .collect::<Vec<Bundle>>()
+            .into_iter()
+    }
+
+    // Added position value per delta.
+    pub(crate) fn stepwise_added_delta_value(&self) -> impl Iterator<Item = Decimal> {
+        //println!("--------------");
+        self.deltas
+            .iter()
+            //.chain(std::iter::once(&self.current.invert()))
+            .zip(
+                std::iter::once(Bundle::default())
+                    .chain(self.stepwise_delta_sum())
+            )
+            .map(|(delta, sum_bundle)| {
+                let diff = &(&sum_bundle + &delta.bundle).abs() - &sum_bundle.abs();
+                //println!("sum: {}", sum_bundle.0.get(&Symbol::perp("BTC")).cloned().unwrap_or_default());
+                //println!("delta: {}", delta.bundle.0.get(&Symbol::perp("BTC")).cloned().unwrap_or_default());
+                //println!("diff: {}", diff.0.get(&Symbol::perp("BTC")).cloned().unwrap_or_default());
+                &diff * &delta.valuation
+            })
+            .collect::<Vec<Decimal>>()
+            .into_iter()
+    }
+
+    pub(crate) fn stepwise_added_pnl_value(&self) -> impl Iterator<Item = Decimal> {
+        self.deltas
+            .iter()
+            .zip(self.deltas
+                .iter()
+                .skip(1)
+                .chain(std::iter::once(&self.current.invert()))
+            )
+            .zip(self.stepwise_delta_sum())
+            .map(|((curr, next), sum_bundle)| {
+                &sum_bundle * &next.valuation - &sum_bundle * &curr.valuation
+            })
+            .collect::<Vec<Decimal>>()
+            .into_iter()
+
+    }
+
+    pub fn pnl(&self) -> Decimal {
+        self.stepwise_added_pnl_value().sum()
+    }
+
+    pub fn value(&self) -> Decimal {
+        let added_pnl_value_sum: Decimal = self.stepwise_added_pnl_value().sum();
+        let added_delta_value_sum: Decimal = self.stepwise_added_delta_value().sum();
+        //println!("delta: {}, pnl: {}", added_delta_value_sum, added_pnl_value_sum);
+        added_pnl_value_sum + added_delta_value_sum
+    }
+
+    pub fn relative_pnl(&self) -> Decimal {
+        let value_sum: Decimal = self.stepwise_added_delta_value().map(|delta| delta.abs()).sum();
+        let pnl_sum: Decimal = self.stepwise_added_pnl_value().sum();
+        if value_sum.is_zero() {
+            Decimal::ZERO
+        } else {
+            assert_ne!(value_sum, Decimal::ZERO);
+            pnl_sum / value_sum
+        }
+    }
+
+    /* 
     pub(crate) fn iter_pnl(&self) -> impl Iterator<Item = Decimal> {
         self.iter_size()
             .zip(
@@ -226,6 +304,8 @@ impl Position {
             pnl_sum / value_sum
         }
     }
+    */
+
 
     /*
     pub fn pnl(&self) -> Decimal {
@@ -302,34 +382,98 @@ mod tests {
 
     /*
     #[test]
-    fn position_value_long() {
+    fn position_long() {
         let mut position = Position::default();
 
-        position.current_valuation.0.insert(Symbol::perp("BTC"), dec!(10000));
-        assert_eq!(position.total_value(), dec!(0));
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(10000));
+        assert_eq!(position.pnl(), dec!(0));
+        assert_eq!(position.value(), dec!(0));
 
         *position.size(Symbol::perp("BTC")) = dec!(1);
         let order = position.order();
         position.resize(order);
-        assert_eq!(position.total_value(), dec!(10000));
+        assert_eq!(position.pnl(), dec!(0));
+        assert_eq!(position.value(), dec!(10000));
 
-        position.current_valuation.0.insert(Symbol::perp("BTC"), dec!(20000));
-        assert_eq!(position.total_value(), dec!(20000));
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(20000));
+        assert_eq!(position.pnl(), dec!(10000));
+        assert_eq!(position.value(), dec!(20000));
 
         *position.size(Symbol::perp("BTC")) = dec!(0.5);
         let order = position.order();
         position.resize(order);
-        assert_eq!(position.total_value(), dec!(10000));
+        assert_eq!(position.pnl(), dec!(10000));
+        assert_eq!(position.value(), dec!(10000));
 
-        position.current_valuation.0.insert(Symbol::perp("BTC"), dec!(10000));
-        assert_eq!(position.total_value(), dec!(5000));
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(10000));
+        assert_eq!(position.pnl(), dec!(5000));
+        assert_eq!(position.value(), dec!(5000));
 
         *position.size(Symbol::perp("BTC")) = dec!(0);
         let order = position.order();
         position.resize(order);
-        assert_eq!(position.total_value(), dec!(0));
+        assert_eq!(position.pnl(), dec!(5000));
+        assert_eq!(position.value(), dec!(0));
     }
-    */
+
+    #[test]
+    fn position_short() {
+        let mut position = Position::default();
+
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(10000));
+        assert_eq!(position.pnl(), dec!(0));
+        assert_eq!(position.value(), dec!(0));
+
+        *position.size(Symbol::perp("BTC")) = dec!(-1);
+        let order = position.order();
+        position.resize(order);
+        assert_eq!(position.pnl(), dec!(0));
+        assert_eq!(position.value(), dec!(10000));
+
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(5000));
+        assert_eq!(position.pnl(), dec!(5000));
+        assert_eq!(position.value(), dec!(15000));
+
+        *position.size(Symbol::perp("BTC")) = dec!(-0.5);
+        let order = position.order();
+        position.resize(order);
+        assert_eq!(position.pnl(), dec!(5000));
+        assert_eq!(position.value(), dec!(7500));
+
+        position
+            .current
+            .valuation
+            .0
+            .insert(Symbol::perp("BTC"), dec!(10000));
+        assert_eq!(position.pnl(), dec!(2500));
+        assert_eq!(position.value(), dec!(10000));
+
+        *position.size(Symbol::perp("BTC")) = dec!(0);
+        let order = position.order();
+        position.resize(order);
+        assert_eq!(position.pnl(), dec!(2500));
+        assert_eq!(position.value(), dec!(5000));
+    }
 
     #[test]
     fn position_long_pnl() {
@@ -412,6 +556,7 @@ mod tests {
         position.resize(order);
         assert_eq!(position.pnl(), dec!(2500));
     }
+    */
 
     #[test]
     fn position_simple_long_pnl() {

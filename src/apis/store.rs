@@ -125,8 +125,9 @@ impl<A: Api> Api for Store<A> {
             next_key.time = next_key.time + next_key.interval;
         }
 
+        log::warn!("out length: {}", out.len());
+
         if out.is_empty() {
-            log::trace!("Store was empty, fetching using underlying API.");
 
             let candles = self.api.get_candles(key).await?;
             log::trace!("Got candles!");

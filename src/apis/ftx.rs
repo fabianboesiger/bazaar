@@ -19,7 +19,7 @@ pub struct Ftx {
 }
 
 impl Ftx {
-    pub fn new_from_env() -> Self {
+    pub fn from_env() -> Self {
         let options = Options {
             endpoint: env::var("FTX_ENDPOINT")
                 .map(|endpoint| match endpoint.to_ascii_lowercase().as_str() {

@@ -1,6 +1,6 @@
 use super::Valuation;
 use crate::Symbol;
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::Signed};
 use std::{
     collections::HashMap,
     ops::{Add, Mul, Neg, Sub},
@@ -26,6 +26,14 @@ impl Bundle {
         out
     }
 
+    pub fn signum(&self) -> Self {
+        let mut out = self.clone();
+        for size in out.0.values_mut() {
+            *size = size.signum();
+        }
+        out
+    }
+
     /*
     pub fn quote_size(self, rhs: &Valuation) -> Decimal {
         let mut value = Decimal::ZERO;
@@ -37,13 +45,6 @@ impl Bundle {
         value
     }
 
-    pub fn signum(&self) -> Self {
-        let mut out = self.clone();
-        for (_, size) in &mut out.0 {
-            *size = size.signum();
-        }
-        out
-    }
 
     pub(crate) fn buy_only(&self) -> Self {
         let mut bundle = Bundle::default();

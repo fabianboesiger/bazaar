@@ -201,7 +201,7 @@ impl MarketInfo {
         if increment.is_zero() {
             size
         } else {
-            (size / increment).round() * increment
+            (size / increment).round_dp_with_strategy(0, RoundingStrategy::ToZero) * increment
         }
     }
 

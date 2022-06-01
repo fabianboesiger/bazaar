@@ -218,6 +218,10 @@ impl<A: Api> Exchange<A> {
                 self.valuate();
 
                 strategy.eval(self)?;
+
+                // Update position value again for potential new positions.
+                self.valuate();
+
                 /*
                 log::trace!("Exiting positions.");
                 self.exit_many().await?;
@@ -399,7 +403,7 @@ impl<A: Api> Exchange<A> {
         let valuation = Valuation(
             self.candles
                 .iter()
-                .filter_map(|(&symbol, candle)| Some((symbol, candle.back()?.1?.close)))
+                .filter_map(|(&symbol, candle)| Some((symbol, candle.front()?.1?.close)))
                 .collect(),
         );
 
@@ -412,14 +416,36 @@ impl<A: Api> Exchange<A> {
 
     async fn execute(&mut self) -> Result<(), ApiError> {
         // Get all orders.
-        let orders = self.positions().map(|position| position.order()).collect();
+        let orders: Vec<ValuedBundle> = self.positions().map(|position| position.order()).collect();
+        for order in &orders {
+            assert!(order.time.is_some());
+        }
 
         // Order and get order results.
         let order_results = self.order(orders).await?;
 
-        // Adapt positions to order results.
+        let mut value_diff_sum = Decimal::ZERO;
         for (position, order_result) in self.positions_mut().zip(order_results) {
+            let before_value = position.value();
+
+            // Adapt positions to order results.
             position.resize(order_result);
+
+            // Change wallet value.
+            let after_value = position.value();
+            let value_diff = after_value - before_value;
+            //println!("before: {}, after: {}", before_value, after_value);
+            value_diff_sum += value_diff;
+        }
+
+
+        if value_diff_sum > Decimal::ZERO {
+            println!("withdraw {}", value_diff_sum);
+            self.wallet.reserve(value_diff_sum, self.api.quote_asset()).unwrap();
+            self.wallet.withdraw(value_diff_sum, self.api.quote_asset()).unwrap();
+        } else if value_diff_sum < Decimal::ZERO {
+            println!("deposit {}", value_diff_sum);
+            self.wallet.deposit(-value_diff_sum, self.api.quote_asset());
         }
 
         // Remove closed positions.
@@ -455,7 +481,7 @@ impl<A: Api> Exchange<A> {
                 -(actual_order.size - actual_order_result.size)
             };
 
-            println!("order: {}, price: {}, missing: {}", symbol, price, missing);
+            //println!("order: {}, price: {}, missing: {}", symbol, price, missing);
 
             let same_side_order_size_sum: Decimal = orders
                 .iter()
@@ -474,16 +500,18 @@ impl<A: Api> Exchange<A> {
 
                 // Set the price from the actual order result.
                 if order_size.signum() == missing.signum() {
-                    adjusted_order.bundle.0.insert(
-                        symbol,
-                        order_size - missing * order_size / same_side_order_size_sum,
-                    );
+                    //assert_ne!(same_side_order_size_sum, Decimal::ZERO);
+                    if same_side_order_size_sum == Decimal::ZERO {
+                        assert_eq!(order_size, Decimal::ZERO);
+                    } else {
+                        adjusted_order.bundle.0.insert(
+                            symbol,
+                            order_size - missing * order_size / same_side_order_size_sum,
+                        );
+                    }
                 }
             }
         }
-        /*
-
-        */
 
         Ok(adjusted_orders)
     }
@@ -553,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn order_bundles_single_unvalued() {
-        let api = Simulate::new(Ftx::new_from_env(), Wallet::default());
+        let api = Simulate::new(Ftx::from_env(), Wallet::default());
         let exchange = Exchange::new(api, Utc::now());
         let symbol = Symbol::perp("BTC");
         let time = Utc::now();
@@ -569,7 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn order_bundles_multiple_unvalued() {
-        let api = Simulate::new(Ftx::new_from_env(), Wallet::default());
+        let api = Simulate::new(Ftx::from_env(), Wallet::default());
         let exchange = Exchange::new(api, Utc::now());
         let symbol = Symbol::perp("BTC");
         let time = Utc::now();
@@ -595,7 +623,7 @@ mod tests {
 
     #[tokio::test]
     async fn order_bundles_single_valued() {
-        let api = Simulate::new(Ftx::new_from_env(), Wallet::default());
+        let api = Simulate::new(Ftx::from_env(), Wallet::default());
         let fee = api.order_fee().await;
         let exchange = Exchange::new(api, Utc::now());
         let symbol = Symbol::perp("BTC");

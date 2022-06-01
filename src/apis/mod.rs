@@ -66,8 +66,8 @@ mod tests {
 
     #[tokio::test]
     async fn store_api() {
-        let ftx_api = Ftx::new_from_env();
-        let store_api = Store::new(Ftx::new_from_env()).await;
+        let ftx_api = Ftx::from_env();
+        let store_api = Store::new(Ftx::from_env()).await;
 
         let key = CandleKey {
             market: Symbol::new("BTC-PERP"),
@@ -89,8 +89,8 @@ mod tests {
 
     #[tokio::test]
     async fn simulate_api() {
-        let ftx_api = Ftx::new_from_env();
-        let simulate_api = Simulate::new(Ftx::new_from_env(), Wallet::new());
+        let ftx_api = Ftx::from_env();
+        let simulate_api = Simulate::new(Ftx::from_env(), Wallet::new());
 
         let key = CandleKey {
             market: Symbol::new("BTC-PERP"),
@@ -112,8 +112,8 @@ mod tests {
 
     #[tokio::test]
     async fn forward_fill_api() {
-        let ftx_api = Ftx::new_from_env();
-        let forward_fill_api = ForwardFill::new(Ftx::new_from_env(), Duration::hours(1));
+        let ftx_api = Ftx::from_env();
+        let forward_fill_api = ForwardFill::new(Ftx::from_env(), Duration::hours(1));
 
         let key = CandleKey {
             market: Symbol::new("BTC-PERP"),
