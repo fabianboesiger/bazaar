@@ -2,10 +2,13 @@ use super::{Bundle, Valuation};
 use crate::{Order, OrderInfo, OrderType, Side};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use std::ops::Add;
+use std::{
+    fmt::Debug,
+    ops::{Add, Neg},
+};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ValuedBundle {
     pub(crate) bundle: Bundle,
     pub(crate) valuation: Valuation,
@@ -17,12 +20,8 @@ impl ValuedBundle {
         &self.bundle * &self.valuation
     }
 
-    pub fn invert(&self) -> Self {
-        ValuedBundle {
-            bundle: self.bundle.invert(),
-            valuation: self.valuation.clone(),
-            time: self.time,
-        }
+    pub fn abs_value(&self) -> Decimal {
+        &self.bundle.abs() * &self.valuation
     }
 }
 
@@ -168,5 +167,60 @@ impl Add for &ValuedBundle {
             valuation: self.valuation.clone(),
             time: self.time,
         }
+    }
+}
+
+impl Add<&Self> for ValuedBundle {
+    type Output = ValuedBundle;
+
+    fn add(self, rhs: &ValuedBundle) -> Self::Output {
+        assert_eq!(self.valuation, rhs.valuation);
+        assert_eq!(self.time, rhs.time);
+
+        let bundle = self.bundle + &rhs.bundle;
+
+        ValuedBundle {
+            bundle,
+            valuation: self.valuation,
+            time: self.time,
+        }
+    }
+}
+
+impl Neg for &ValuedBundle {
+    type Output = ValuedBundle;
+
+    fn neg(self) -> Self::Output {
+        ValuedBundle {
+            bundle: -&self.bundle,
+            valuation: self.valuation.clone(),
+            time: self.time,
+        }
+    }
+}
+
+impl Neg for ValuedBundle {
+    type Output = ValuedBundle;
+
+    fn neg(self) -> Self::Output {
+        ValuedBundle {
+            bundle: -self.bundle,
+            valuation: self.valuation,
+            time: self.time,
+        }
+    }
+}
+
+impl Debug for ValuedBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (symbol, qty) in &self.bundle.0 {
+            if *qty != Decimal::ZERO {
+                let val = self.valuation.0.get(symbol).cloned().unwrap_or_default();
+                write!(f, "{} {} ({} USD), ", qty, symbol, qty * val)?;
+            }
+        }
+        writeln!(f)?;
+
+        Ok(())
     }
 }

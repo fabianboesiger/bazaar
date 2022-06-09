@@ -48,6 +48,8 @@ impl<A: Api> Api for Simulate<A> {
     }
 
     async fn place_order(&self, order: Order) -> Result<OrderInfo, ApiError> {
+        log::trace!("place order simulate");
+
         //let quote_size = order.size * order.price;
         //let wallet = self.wallet.lock().await;
 

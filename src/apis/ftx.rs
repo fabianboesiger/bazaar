@@ -74,7 +74,7 @@ impl Api for Ftx {
             .rest
             .request(req.clone())
             .await
-            .unwrap_or_else(|_| panic!("Request failed for: {:?}", req))
+            .unwrap_or_else(|err| panic!("Request failed for: {:?}\nError: {:?}", req, err))
             .into_iter()
             .map(|candle| {
                 (
@@ -143,6 +143,8 @@ impl Api for Ftx {
     */
 
     async fn place_order(&self, order: Order) -> Result<OrderInfo, ApiError> {
+        log::trace!("place order ftx");
+
         let is_market_order = order.order_type == OrderType::Market;
         self.rest
             .request(PlaceOrder {

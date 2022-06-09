@@ -8,6 +8,7 @@ pub use position::Position;
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
+    time::Instant,
 };
 use valuation::Valuation;
 use valued_bundle::ValuedBundle;
@@ -110,7 +111,7 @@ impl<A: Api> Exchange<A> {
         self.candles.remove(&market);
     }
 
-    /// Quit trading.,
+    /// Quit trading.
     pub fn quit(&mut self) {
         self.quit = true;
     }
@@ -212,12 +213,19 @@ impl<A: Api> Exchange<A> {
             // if less than zero, the candle should be available.
             let mut wait_duration = self.current_time + settings.interval - Utc::now();
             if wait_duration <= Duration::zero() {
+
+                let start_instant = Instant::now();
                 // Update wallet and market info.
                 self.update(settings, &mut wait_duration).await?;
+                let update_duration = start_instant.elapsed();
+
+
                 // Update position value.
                 self.valuate();
 
+                let start_instant = Instant::now();
                 strategy.eval(self)?;
+                let strategy_eval_duration = start_instant.elapsed();
 
                 // Update position value again for potential new positions.
                 self.valuate();
@@ -228,13 +236,19 @@ impl<A: Api> Exchange<A> {
                 log::trace!("Entering positions.");
                 self.enter_many().await?;
                 */
+                let start_instant = Instant::now();
                 self.execute().await?;
+                let execute_duration = start_instant.elapsed();
 
                 // Evaluate strategy and handle errors.
                 log::info!(
-                    "Ran strategy for time {}, new total value: {}",
+                    "Ran strategy for time {}, total value: {}, open positions: {}, update: {}ms, evaluation: {}ms, execution: {}ms",
                     self.current_time,
-                    self.total()
+                    self.total(),
+                    self.open_positions.len(),
+                    update_duration.as_millis(),
+                    strategy_eval_duration.as_millis(),
+                    execute_duration.as_millis()
                 );
 
                 self.api.status(self.current_time, self.total());
@@ -415,6 +429,16 @@ impl<A: Api> Exchange<A> {
     }
 
     async fn execute(&mut self) -> Result<(), ApiError> {
+        assert!(
+            self.open_positions
+                .iter()
+                .map(|position| position.value())
+                .sum::<Decimal>()
+                <= self.total()
+        );
+
+        let old_positions = self.open_positions.clone();
+
         // Get all orders.
         let orders: Vec<ValuedBundle> = self.positions().map(|position| position.order()).collect();
         for order in &orders {
@@ -422,40 +446,59 @@ impl<A: Api> Exchange<A> {
         }
 
         // Order and get order results.
-        let order_results = self.order(orders).await?;
+        let order_results = self.order(orders.clone()).await?;
+
 
         let mut value_diff_sum = Decimal::ZERO;
-        for (position, order_result) in self.positions_mut().zip(order_results) {
-            let before_value = position.value();
+        for (position, (order_result, order)) in self.positions_mut().zip(order_results.into_iter().zip(orders)) {            
+            if order_result.abs_value() != Decimal::ZERO {
+                // Adapt positions to order results.
+                position.resize(order_result.clone());
 
-            // Adapt positions to order results.
-            position.resize(order_result);
+                assert_ne!(position.symbols().count(), 0, "order: {:?}, order result: {:?}, position: {:?}", order, order_result, position);
 
-            // Change wallet value.
-            let after_value = position.value();
-            let value_diff = after_value - before_value;
-            //println!("before: {}, after: {}", before_value, after_value);
-            value_diff_sum += value_diff;
+                log::error!("resized position has value {}", position.value());
+
+                // Change wallet value.
+                if position.closed() {
+                    // Position gets closed.
+                    value_diff_sum += position.value();
+                } else {
+                    // Position gets opened.
+                    value_diff_sum -= position.value();
+                }
+            } else {
+                assert_eq!(order.abs_value(), Decimal::ZERO, "order: {:?}, order result: {:?}", order, order_result);
+            }
         }
 
+        debug_assert!(self.open_positions.first().is_none() || self.open_positions.first().unwrap().value() == Decimal::ZERO);
 
-        if value_diff_sum > Decimal::ZERO {
-            println!("withdraw {}", value_diff_sum);
-            self.wallet.reserve(value_diff_sum, self.api.quote_asset()).unwrap();
-            self.wallet.withdraw(value_diff_sum, self.api.quote_asset()).unwrap();
-        } else if value_diff_sum < Decimal::ZERO {
-            println!("deposit {}", value_diff_sum);
-            self.wallet.deposit(-value_diff_sum, self.api.quote_asset());
+        if value_diff_sum < Decimal::ZERO {
+            self.wallet.reserve(value_diff_sum.abs(), self.api.quote_asset())
+                .expect("reservation failed");
+            self.wallet.withdraw(value_diff_sum.abs(), self.api.quote_asset())
+                .expect("withdrawal failed");
+        } else if value_diff_sum > Decimal::ZERO {
+            self.wallet.deposit(value_diff_sum.abs(), self.api.quote_asset());
         }
 
         // Remove closed positions.
-        self.open_positions
-            .retain(|position| position.value() != Decimal::ZERO);
+        self.open_positions.retain(|position| !position.removable());
+
+        for position in &self.open_positions {
+            assert_ne!(position.symbols().count(), 0);
+        }
+
+        // TODO: Remove for general strategies.
+        assert!(self.open_positions.len() <= 1);
 
         Ok(())
     }
 
     async fn order(&self, orders: Vec<ValuedBundle>) -> Result<Vec<ValuedBundle>, ApiError> {
+        log::trace!("issue order");
+
         // Coalesce orders to issue only one order per symbol.
         let actual_orders: Vec<Order> = Self::coalesce_orders(&orders).into();
         let mut actual_order_futures = Vec::new();
@@ -465,6 +508,8 @@ impl<A: Api> Exchange<A> {
         let actual_order_results: Result<Vec<OrderInfo>, ApiError> =
             join_all(actual_order_futures).await.into_iter().collect();
         let actual_order_results = actual_order_results?;
+
+        log::trace!("issue order joined");
 
         let mut adjusted_orders = orders.clone();
         for (actual_order, actual_order_result) in

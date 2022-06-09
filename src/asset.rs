@@ -16,6 +16,7 @@ impl<'de> Deserialize<'de> for Asset {
 }
 
 impl Asset {
+    // Flyweight pattern
     // Leaks memory if and only if no asset with the same name exists.
     // This allows us to pass the asset name as a static str, which in turn
     // enables implementing Copy.
@@ -45,6 +46,8 @@ mod tests {
     fn allocation() {
         let asset1 = Asset::new("BTC-PERP");
         let asset2 = Asset::new("BTC-PERP");
+        let asset3 = Asset::new("ETH-PERP");
         assert!(std::ptr::eq(asset1.0, asset2.0));
+        assert!(!std::ptr::eq(asset1.0, asset3.0));
     }
 }

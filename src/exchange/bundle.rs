@@ -1,23 +1,25 @@
 use super::Valuation;
 use crate::Symbol;
-use rust_decimal::{Decimal, prelude::Signed};
+use fxhash::{FxHashMap, FxHasher};
+use rust_decimal::{prelude::Signed, Decimal};
 use std::{
-    collections::HashMap,
+    hash::BuildHasherDefault,
     ops::{Add, Mul, Neg, Sub},
 };
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Bundle(pub(crate) HashMap<Symbol, Decimal>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bundle(pub(crate) FxHashMap<Symbol, Decimal>);
+
+impl Default for Bundle {
+    fn default() -> Self {
+        Self(FxHashMap::with_capacity_and_hasher(
+            200,
+            BuildHasherDefault::<FxHasher>::default(),
+        ))
+    }
+}
 
 impl Bundle {
-    pub fn invert(&self) -> Self {
-        let mut out = self.clone();
-        for size in out.0.values_mut() {
-            *size = -(*size);
-        }
-        out
-    }
-
     pub fn abs(&self) -> Self {
         let mut out = self.clone();
         for size in out.0.values_mut() {
@@ -72,11 +74,21 @@ impl Add for &Bundle {
     type Output = Bundle;
 
     fn add(self, rhs: &Bundle) -> Self::Output {
-        let mut output = HashMap::new();
+        let mut output = self.0.clone();
 
-        for (&symbol, qty) in &self.0 {
+        for (&symbol, qty) in &rhs.0 {
             *output.entry(symbol).or_default() += qty;
         }
+
+        Bundle(output)
+    }
+}
+
+impl Add<&Self> for Bundle {
+    type Output = Bundle;
+
+    fn add(self, rhs: &Bundle) -> Self::Output {
+        let mut output = self.0;
 
         for (&symbol, qty) in &rhs.0 {
             *output.entry(symbol).or_default() += qty;
@@ -90,14 +102,52 @@ impl Sub for &Bundle {
     type Output = Bundle;
 
     fn sub(self, rhs: &Bundle) -> Self::Output {
-        let mut output = HashMap::new();
-
-        for (&symbol, qty) in &self.0 {
-            *output.entry(symbol).or_default() += qty;
-        }
+        let mut output = self.0.clone();
 
         for (&symbol, qty) in &rhs.0 {
             *output.entry(symbol).or_default() -= qty;
+        }
+
+        Bundle(output)
+    }
+}
+
+impl Sub<&Self> for Bundle {
+    type Output = Bundle;
+
+    fn sub(self, rhs: &Bundle) -> Self::Output {
+        let mut output = self.0;
+
+        for (&symbol, qty) in &rhs.0 {
+            *output.entry(symbol).or_default() -= qty;
+        }
+
+        Bundle(output)
+    }
+}
+
+impl Mul for &Bundle {
+    type Output = Bundle;
+
+    fn mul(self, rhs: &Bundle) -> Self::Output {
+        let mut output = self.0.clone();
+
+        for (&symbol, qty) in &rhs.0 {
+            *output.entry(symbol).or_default() *= qty;
+        }
+
+        Bundle(output)
+    }
+}
+
+impl Mul<&Self> for Bundle {
+    type Output = Bundle;
+
+    fn mul(self, rhs: &Bundle) -> Self::Output {
+        let mut output = self.0;
+
+        for (&symbol, qty) in &rhs.0 {
+            *output.entry(symbol).or_default() *= qty;
         }
 
         Bundle(output)
@@ -118,31 +168,28 @@ impl Mul<&Valuation> for &Bundle {
     }
 }
 
-impl Mul<&Bundle> for &Bundle {
+impl Neg for &Bundle {
     type Output = Bundle;
 
-    fn mul(self, rhs: &Bundle) -> Self::Output {
-        let mut output = HashMap::new();
+    fn neg(self) -> Self::Output {
+        let mut output = self.0.clone();
 
-        for (&symbol, &qty) in &self.0 {
-            output.insert(
-                symbol,
-                qty * rhs.0.get(&symbol).cloned().unwrap_or_default(),
-            );
+        for value in output.values_mut() {
+            *value = -*value;
         }
 
         Bundle(output)
     }
 }
 
-impl Neg for &Bundle {
+impl Neg for Bundle {
     type Output = Bundle;
 
     fn neg(self) -> Self::Output {
-        let mut output = HashMap::new();
+        let mut output = self.0;
 
-        for (&symbol, &qty) in &self.0 {
-            output.insert(symbol, -qty);
+        for value in output.values_mut() {
+            *value = -*value;
         }
 
         Bundle(output)

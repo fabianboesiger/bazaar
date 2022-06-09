@@ -3,6 +3,8 @@ mod binance;
 mod forward_fill;
 #[cfg(feature = "ftx")]
 mod ftx;
+#[cfg(test)]
+mod mock;
 mod monitor;
 mod simulate;
 mod store;

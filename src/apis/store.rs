@@ -128,7 +128,6 @@ impl<A: Api> Api for Store<A> {
         log::warn!("out length: {}", out.len());
 
         if out.is_empty() {
-
             let candles = self.api.get_candles(key).await?;
             log::trace!("Got candles!");
 

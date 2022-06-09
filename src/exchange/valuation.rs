@@ -1,6 +1,17 @@
-use crate::Symbol;
-use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Valuation(pub(crate) HashMap<Symbol, Decimal>);
+use crate::Symbol;
+use fxhash::{FxHashMap, FxHasher};
+use rust_decimal::Decimal;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Valuation(pub(crate) FxHashMap<Symbol, Decimal>);
+
+impl Default for Valuation {
+    fn default() -> Self {
+        Self(FxHashMap::with_capacity_and_hasher(
+            200,
+            BuildHasherDefault::<FxHasher>::default(),
+        ))
+    }
+}

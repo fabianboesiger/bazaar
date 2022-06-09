@@ -36,6 +36,7 @@ where
             {
                 Ok(pool) => {
                     while let Some(log) = rx.recv().await {
+                        log::trace!("monitor update");
                         if let Err(err) = log.update(&pool, session_id).await {
                             log::error!("A database error occurred: {}", err);
                         }
@@ -71,6 +72,8 @@ impl<A: Api> Api for Monitor<A> {
     }
 
     async fn place_order(&self, order: Order) -> Result<OrderInfo, ApiError> {
+        log::trace!("place order monitor");
+
         self.tx.send(order.clone().boxed()).ok();
 
         let order_info = self.api.place_order(order).await?;
