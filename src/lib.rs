@@ -48,13 +48,15 @@ impl Default for Bazaar {
 }
 
 impl Bazaar {
-    /// Runs your strategy live on a simulated exchange.
-    #[cfg(all(not(feature = "backtest"), not(feature = "live")))]
+    /// Runs your strategy hot on a simulated exchange.
+    #[cfg(all(not(feature = "backtest"), not(feature = "hot")))]
     pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
     where
         A: Api,
         S: Strategy<Monitor<Simulate<A>>>,
     {
+        log::warn!("Running cold, live.");
+
         let mut wallet = Wallet::new();
         wallet.deposit(self.start_capital, Asset::new("USD"));
 
@@ -65,13 +67,15 @@ impl Bazaar {
         Ok(())
     }
 
-    /// Runs your strategy live on the real exchange.
-    #[cfg(all(not(feature = "backtest"), feature = "live"))]
+    /// Runs your strategy hot on the real exchange.
+    #[cfg(all(not(feature = "backtest"), feature = "hot"))]
     pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
     where
         A: Api,
         S: Strategy<Monitor<A>>,
     {
+        log::warn!("Running hot, live.");
+
         let api = Monitor::new(api);
         let exchange = Exchange::new(api, self.start_time);
         exchange.run(strategy).await?;
@@ -88,6 +92,8 @@ impl Bazaar {
         A: Api,
         S: Strategy<Monitor<Simulate<ForwardFill<Store<A>>>>>,
     {
+        log::warn!("Running cold, backtest.");
+
         let mut wallet = Wallet::new();
         wallet.deposit(self.start_capital, Asset::new("USD"));
 
