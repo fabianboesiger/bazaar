@@ -10,6 +10,7 @@ pub enum Trigger {
     StopLoss(Decimal),
     TakeProfit(Decimal),
     TrailingStopLoss(Decimal),
+    TrailingStopLossAdaptive(Decimal, Decimal, Decimal)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +75,11 @@ impl<A: Api, S: Strategy<A>> Strategy<A> for Levels<A, S> {
                     Trigger::TakeProfit(threshold) if relative_pnl >= threshold => Some(action),
                     Trigger::TrailingStopLoss(threshold)
                         if relative_pnl <= data.max_relative_pnl - threshold =>
+                    {
+                        Some(action)
+                    }
+                    Trigger::TrailingStopLossAdaptive(threshold_max, threshold_min, threshold_mul)
+                        if relative_pnl <= data.max_relative_pnl - (threshold_max - data.max_relative_pnl * threshold_mul).max(threshold_min) =>
                     {
                         Some(action)
                     }

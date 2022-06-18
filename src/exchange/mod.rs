@@ -437,8 +437,6 @@ impl<A: Api> Exchange<A> {
                 <= self.total()
         );
 
-        let old_positions = self.open_positions.clone();
-
         // Get all orders.
         let orders: Vec<ValuedBundle> = self.positions().map(|position| position.order()).collect();
         for order in &orders {

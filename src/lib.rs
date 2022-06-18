@@ -37,15 +37,36 @@ impl Default for Bazaar {
     fn default() -> Self {
         Bazaar {
             start_capital: dec!(1000),
-            start_time: Utc.ymd(2021, 1, 1).and_hms(0, 0, 0),
+            start_time: if cfg!(feature = "backtest") {
+                Utc.ymd(2021, 1, 1).and_hms(0, 0, 0)
+            } else {
+                Utc::now()
+            },
             forward_fill: Duration::days(1),
         }
     }
 }
 
 impl Bazaar {
-    /// Runs your strategy live.
-    #[cfg(not(feature = "backtest"))]
+    /// Runs your strategy live on a simulated exchange.
+    #[cfg(all(not(feature = "backtest"), not(feature = "live")))]
+    pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
+    where
+        A: Api,
+        S: Strategy<Monitor<Simulate<A>>>,
+    {
+        let mut wallet = Wallet::new();
+        wallet.deposit(self.start_capital, Asset::new("USD"));
+
+        let api = Monitor::new(Simulate::new(api, wallet));
+        let exchange = Exchange::new(api, self.start_time);
+        exchange.run(strategy).await?;
+
+        Ok(())
+    }
+
+    /// Runs your strategy live on the real exchange.
+    #[cfg(all(not(feature = "backtest"), feature = "live"))]
     pub async fn run<A, S>(self, api: A, strategy: S) -> Result<(), AnyError>
     where
         A: Api,

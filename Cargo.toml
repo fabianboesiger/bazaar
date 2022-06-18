@@ -29,6 +29,6 @@ rolling_norm = { version = "0.3.0" }
 rand = "0.8"
 
 [features]
-default = ["ftx", "monitor", "backtest"]
+default = ["ftx", "monitor"]
 monitor = ["serde", "serde_json"]
 backtest = []
